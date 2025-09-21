@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.sqlite
+*.db
+.venv/
+
+# Streamlit
+.streamlit/
+
+# Thumbnails / generated
+thumbnails/
+thumbnails_square/
+*.jpg
+
+# Local config (not tracked)
+keytag_config.json
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,8 @@
+streamlit==1.37.1
+Pillow==10.4.0
+ImageHash==4.3.1
+opencv-python-headless==4.10.0.84
+numpy==2.1.0
+python-dateutil==2.9.0.post0
+pywebview==4.4.1
+requests==2.32.3
