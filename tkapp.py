@@ -143,9 +143,8 @@ class KeyTaggerApp:
 		self.canvas.grid(row=0, column=0, sticky='nsew')
 		scroll_y.grid(row=0, column=1, sticky='ns')
 
-		# Enable mouse-wheel scrolling
-		self._bind_mousewheel(self.canvas)
-		self._bind_mousewheel(self.grid_frame)
+		# Enable mouse-wheel scrolling globally so it works over all child widgets
+		self._activate_mousewheel()
 
 		# Apply app background
 		self.root.configure(background='#e9edf5')
