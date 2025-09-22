@@ -192,6 +192,52 @@ class Database:
             )
             conn.commit()
 
+    def remove_media_tags(self, media_id: int, tag_names: Sequence[str]) -> None:
+        if not tag_names:
+            return
+        names_norm = [t.strip().lower() for t in tag_names if t and t.strip()]
+        if not names_norm:
+            return
+        with self.connect() as conn:
+            cur = conn.cursor()
+            placeholders = ",".join(["?"] * len(names_norm))
+            rows = cur.execute(
+                f"SELECT id FROM tags WHERE name IN ({placeholders})",
+                names_norm,
+            ).fetchall()
+            tag_ids = [int(r[0]) for r in rows]
+            if not tag_ids:
+                return
+            cur.executemany(
+                "DELETE FROM media_tags WHERE media_id = ? AND tag_id = ?",
+                [(media_id, tag_id) for tag_id in tag_ids],
+            )
+            conn.commit()
+
+    def remove_tag_globally(self, tag_name: str) -> int:
+        """Remove a tag by name from all media and delete the tag if unused.
+
+        Returns the number of media_tag rows deleted.
+        """
+        name_norm = (tag_name or "").strip().lower()
+        if not name_norm:
+            return 0
+        with self.connect() as conn:
+            cur = conn.cursor()
+            row = cur.execute("SELECT id FROM tags WHERE name=?", (name_norm,)).fetchone()
+            if not row:
+                return 0
+            tag_id = int(row[0])
+            cur.execute("DELETE FROM media_tags WHERE tag_id=?", (tag_id,))
+            affected = cur.rowcount or 0
+            # Remove the tag itself if no more references remain
+            cur.execute(
+                "DELETE FROM tags WHERE id=? AND NOT EXISTS (SELECT 1 FROM media_tags WHERE tag_id=?)",
+                (tag_id, tag_id),
+            )
+            conn.commit()
+            return affected
+
     def query_media(
         self,
         *,

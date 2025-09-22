@@ -107,6 +107,9 @@ class KeyTaggerApp:
 		self.selected_ids: Set[int] = set()
 		self.photo_cache: Dict[int, ImageTk.PhotoImage] = {}
 		self.records: List[MediaRecord] = []
+		self.card_frames: List[ttk.Frame] = []
+		self._cols: int = 1
+		self._thumb_px: int = THUMB_SIZE
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -142,6 +145,25 @@ class KeyTaggerApp:
 		last_key_lbl = ttk.Label(side, textvariable=self.last_key_var, style='Muted.TLabel')
 		last_key_lbl.pack(fill='x')
 
+		# Hotkeys panel
+		sep1 = ttk.Separator(side)
+		sep1.pack(fill='x', pady=(10, 8))
+		hk_title = ttk.Label(side, text='Tags & Hotkeys', style='Title.TLabel')
+		hk_title.pack(anchor='w', pady=(0, 6))
+		self.hk_new_key_var = tk.StringVar()
+		self.hk_new_tag_var = tk.StringVar()
+		row_add = ttk.Frame(side, style='Side.TFrame')
+		row_add.pack(fill='x', pady=(0, 6))
+		entry_key = ttk.Entry(row_add, textvariable=self.hk_new_key_var, width=8)
+		entry_key.pack(side='left')
+		entry_tag = ttk.Entry(row_add, textvariable=self.hk_new_tag_var, width=16)
+		entry_tag.pack(side='left', padx=(6, 6))
+		btn_add = ttk.Button(row_add, text='Add', command=self._add_hotkey_mapping, style='Small.TButton')
+		btn_add.pack(side='left')
+		self.hotkey_list_frame = ttk.Frame(side, style='Side.TFrame')
+		self.hotkey_list_frame.pack(fill='x', pady=(6, 0))
+		self._render_hotkey_list()
+
 		# Main area with scrollable canvas
 		main = ttk.Frame(self.root, style='App.TFrame')
 		main.grid(row=0, column=1, sticky='nsew')
@@ -152,10 +174,11 @@ class KeyTaggerApp:
 		scroll_y = ttk.Scrollbar(main, orient='vertical', command=self.canvas.yview)
 		self.grid_frame = ttk.Frame(self.canvas, style='App.TFrame')
 		self.grid_frame.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
-		self.canvas.create_window((0, 0), window=self.grid_frame, anchor='nw')
+		self.grid_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor='nw')
 		self.canvas.configure(yscrollcommand=scroll_y.set)
 		self.canvas.grid(row=0, column=0, sticky='nsew')
 		scroll_y.grid(row=0, column=1, sticky='ns')
+		self.canvas.bind('<Configure>', self._on_canvas_configure)
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
 		self._activate_mousewheel()
@@ -187,6 +210,7 @@ class KeyTaggerApp:
 				'tag_fg': '#93c5fd',
 				'canvas_bg': '#0f172a',
 				'root_bg': '#0b1220',
+				'key_hint': '#fbbf24',
 			}
 		else:
 			self.palette = {
@@ -205,6 +229,7 @@ class KeyTaggerApp:
 				'tag_fg': '#3730a3',
 				'canvas_bg': '#f6f7fb',
 				'root_bg': '#e9edf5',
+				'key_hint': '#b45309',
 			}
 
 		# Fonts
@@ -226,10 +251,30 @@ class KeyTaggerApp:
 		style.map('Primary.TButton', background=[('active', self.palette['primary_active']), ('pressed', self.palette['primary_active'])])
 		style.configure('Accent.TButton', background=self.palette['accent'], foreground='#ffffff')
 		style.map('Accent.TButton', background=[('active', self.palette['accent_active']), ('pressed', self.palette['accent_active'])])
+		style.configure('Small.TButton', padding=(6, 2))
+		style.configure('HK.TCheckbutton', background=self.palette['side_bg'], foreground=self.palette['text'])
+		style.configure('HKHint.TLabel', background=self.palette['side_bg'], foreground=self.palette['key_hint'])
+
+		# Dark mode button overrides
+		if self.dark_mode:
+			style.configure('TButton', background='#374151', foreground='#ffffff')
+			style.map('TButton', background=[('active', '#4b5563'), ('pressed', '#4b5563')])
+			style.configure('Primary.TButton', background='#3b82f6', foreground='#ffffff')
+			style.map('Primary.TButton', background=[('active', '#2563eb'), ('pressed', '#2563eb')])
+			style.configure('Accent.TButton', background='#34d399', foreground='#ffffff')
+			style.map('Accent.TButton', background=[('active', '#10b981'), ('pressed', '#10b981')])
+			style.configure('Small.TButton', background='#374151', foreground='#ffffff')
+			style.map('Small.TButton', background=[('active', '#4b5563'), ('pressed', '#4b5563')])
+			style.configure('HK.TCheckbutton', background=self.palette['side_bg'], foreground=self.palette['text'])
+			style.configure('HKHint.TLabel', background=self.palette['side_bg'], foreground=self.palette['key_hint'])
 
 		# Cards and tags
 		style.configure('Card.TFrame', background=self.palette['card_bg'])
 		style.configure('Tag.TLabel', background=self.palette['tag_bg'], foreground=self.palette['tag_fg'], padding=(6, 2))
+
+		# Fonts for hotkey list
+		self._font_bold = tkfont.Font(family='Segoe UI', size=10, weight='bold')
+		self._font_muted = tkfont.Font(family='Segoe UI', size=9)
 
 		# Update container backgrounds if already created
 		try:
@@ -272,6 +317,35 @@ class KeyTaggerApp:
 			self.canvas.yview_scroll(-1, 'units')
 		elif getattr(event, 'num', None) == 5:
 			self.canvas.yview_scroll(1, 'units')
+
+	def _on_canvas_configure(self, event: tk.Event) -> None:
+		# Keep inner frame width equal to the canvas width
+		try:
+			self.canvas.itemconfigure(self.grid_window, width=event.width)
+		except Exception:
+			pass
+		# Recompute desired number of columns based on available width
+		new_cols = self._compute_columns(max(1, int(event.width)))
+		if new_cols != self._cols:
+			self._cols = new_cols
+			self._layout_cards()
+
+	def _compute_columns(self, available_width: int) -> int:
+		# Approximate per-card width: thumbnail + frame padding + grid padding
+		pad = 6 * 2  # left/right grid padding aggregate
+		frame_pad = 8 * 2  # left/right internal padding
+		card_w = THUMB_SIZE + pad + frame_pad
+		return max(1, available_width // max(1, card_w))
+
+	def _layout_cards(self) -> None:
+		cols = max(1, self._cols)
+		pad = 6
+		for idx, frame in enumerate(self.card_frames):
+			row = idx // cols
+			col = idx % cols
+			frame.grid_configure(row=row, column=col, padx=pad, pady=pad, sticky='n')
+		self.grid_frame.update_idletasks()
+		self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 
 	def _bind_hotkeys(self) -> None:
 		self.root.bind('<Key>', self.on_key)
@@ -321,8 +395,9 @@ class KeyTaggerApp:
 		self._render_grid()
 
 	def _render_grid(self) -> None:
-		cols = 6
+		cols = max(1, self._cols)
 		pad = 6
+		self.card_frames = []
 		for idx, rec in enumerate(self.records):
 			row = idx // cols
 			col = idx % cols
@@ -339,9 +414,10 @@ class KeyTaggerApp:
 				self._update_card_style(f, rid)
 			frame.bind('<Enter>', _on_enter)
 			frame.bind('<Leave>', _on_leave)
+			self.card_frames.append(frame)
 
 			# Select button (square) top-left
-			btn = ttk.Button(frame, text='■', width=2, command=lambda rid=rec.id: self.toggle_select(rid))
+			btn = ttk.Button(frame, text='■', width=2, command=lambda rid=rec.id: self.toggle_select(rid), style='Small.TButton')
 			btn.grid(row=0, column=0, sticky='nw')
 
 			thumb_path = rec.thumbnail_path if rec.thumbnail_path and os.path.exists(rec.thumbnail_path) else None
@@ -351,18 +427,20 @@ class KeyTaggerApp:
 					self.db.update_thumbnail_path(rec.file_path, thumb_path)
 
 			img_label = ttk.Label(frame)
-			img_label.grid(row=1, column=0)
+			img_label.grid(row=1, column=0, padx=0, pady=0)
 			if thumb_path and os.path.exists(thumb_path):
 				try:
 					pil_im = Image.open(thumb_path)
 					photo = ImageTk.PhotoImage(pil_im)
 					self.photo_cache[rec.id] = photo
 					img_label.configure(image=photo)
+					# Keep a direct reference on the widget to avoid garbage collection
+					img_label.image = photo
 				except Exception:
 					pass
 
-			name_label = ttk.Label(frame, text=rec.file_name, width=40)
-			name_label.grid(row=2, column=0)
+			name_label = ttk.Label(frame, text=rec.file_name, width=40, wraplength=max(120, THUMB_SIZE), justify='center')
+			name_label.grid(row=2, column=0, padx=0, pady=(4, 0))
 
 			# Tags row
 			tags = []
@@ -396,8 +474,8 @@ class KeyTaggerApp:
 		dark_var = tk.BooleanVar(value=bool(self.dark_mode))
 		chk = ttk.Checkbutton(frm, text='Enable dark mode', variable=dark_var, command=lambda: self._toggle_dark_mode(dark_var.get()))
 		chk.pack(anchor='w', pady=(0, 8))
-		btn_hotkeys = ttk.Button(frm, text='Hotkey Settings', command=lambda: [dialog.destroy(), self.open_hotkey_settings()])
-		btn_hotkeys.pack(anchor='w')
+		lbl = ttk.Label(frm, text='Manage hotkeys in the left panel.', style='Muted.TLabel')
+		lbl.pack(anchor='w')
 
 	def _toggle_dark_mode(self, enabled: bool) -> None:
 		self.dark_mode = bool(enabled)
@@ -409,6 +487,90 @@ class KeyTaggerApp:
 		except Exception:
 			pass
 		self._refresh_card_styles()
+		# Re-render hotkey list to reflect theme
+		try:
+			self._render_hotkey_list()
+		except Exception:
+			pass
+		# Ensure proper layout after render (in case canvas width changed recently)
+		self._layout_cards()
+
+	def _render_hotkey_list(self) -> None:
+		if not hasattr(self, 'hotkey_list_frame'):
+			return
+		for w in self.hotkey_list_frame.winfo_children():
+			w.destroy()
+		if not self.hotkeys:
+			lbl = ttk.Label(self.hotkey_list_frame, text='No hotkeys yet', style='Muted.TLabel')
+			lbl.pack(anchor='w')
+			return
+		for k in sorted(self.hotkeys.keys()):
+			row = ttk.Frame(self.hotkey_list_frame, style='Side.TFrame')
+			row.pack(fill='x', pady=2)
+			var = tk.BooleanVar(value=False)
+			chk = ttk.Checkbutton(row, variable=var, style='HK.TCheckbutton', command=lambda key=k, v=var: self._toggle_sidebar_tag(key, v.get()))
+			chk.pack(side='left')
+			# Tag name bolded
+			tag_text = self.hotkeys.get(k, '')
+			tag_lbl = ttk.Label(row, text=tag_text)
+			tag_lbl.configure(font=self._font_bold)
+			tag_lbl.pack(side='left', padx=(6, 6))
+			# Key hint
+			key_lbl = ttk.Label(row, text=f"({k})", style='HKHint.TLabel')
+			key_lbl.pack(side='left')
+			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda key=k: self._remove_hotkey_mapping(key))
+			btn.pack(side='right')
+
+	def _add_hotkey_mapping(self) -> None:
+		k = (self.hk_new_key_var.get() or '').strip().lower()
+		t = (self.hk_new_tag_var.get() or '').strip().lower()
+		if not k or not t:
+			messagebox.showerror('Hotkeys', 'Please enter both key and tag')
+			return
+		self.hotkeys[k] = t
+		save_hotkeys(self.hotkeys)
+		self.hk_new_key_var.set('')
+		self.hk_new_tag_var.set('')
+		self._render_hotkey_list()
+		messagebox.showinfo('Hotkeys', f"Added mapping {k} -> {t}")
+
+	def _remove_hotkey_mapping(self, key: str) -> None:
+		tag_to_remove = self.hotkeys.get(key)
+		self.hotkeys.pop(key, None)
+		save_hotkeys(self.hotkeys)
+		# Offer to remove tag globally if it is now unmapped
+		try:
+			still_mapped = tag_to_remove in set(self.hotkeys.values()) if tag_to_remove else False
+		except Exception:
+			still_mapped = False
+		if tag_to_remove and not still_mapped:
+			ans = messagebox.askyesno('Remove Tag Globally?', f"Also remove tag '{tag_to_remove}' from all items?")
+			if ans:
+				try:
+					removed = self.db.remove_tag_globally(tag_to_remove)
+					messagebox.showinfo('Tags', f"Removed '{tag_to_remove}' from {removed} item(s)")
+					self.refresh_records()
+				except Exception:
+					pass
+		self._render_hotkey_list()
+
+	def _toggle_sidebar_tag(self, key: str, checked: bool) -> None:
+		# Toggle applying/removing tag to current selection when checkbox is changed
+		tag = self.hotkeys.get(key)
+		if not tag:
+			return
+		if checked:
+			self.apply_tag_to_selection(tag)
+		else:
+			# Explicit remove across selection
+			if not self.selected_ids:
+				return
+			for mid in list(self.selected_ids):
+				try:
+					self.db.remove_media_tags(int(mid), [tag])
+				except Exception:
+					pass
+			self.refresh_records()
 
 	def toggle_select(self, media_id: int) -> None:
 		if media_id in self.selected_ids:
@@ -423,15 +585,9 @@ class KeyTaggerApp:
 		self._refresh_card_styles()
 
 	def _refresh_card_styles(self) -> None:
-		# Walk grid and recolor
-		idx_map: Dict[int, ttk.Frame] = {}
-		for idx, rec in enumerate(self.records):
-			row = idx // 6
-			col = idx % 6
-			# Locate the frame at (row, col)
-			for child in self.grid_frame.grid_slaves(row=row, column=col):
-				if isinstance(child, ttk.Frame):
-					self._update_card_style(child, rec.id)
+		# Recolor using cached frame order matching records
+		for frame, rec in zip(self.card_frames, self.records):
+			self._update_card_style(frame, rec.id)
 
 	def on_key(self, event: tk.Event) -> None:
 		# Update last key console
@@ -456,68 +612,40 @@ class KeyTaggerApp:
 	def apply_tag_to_selection(self, tag: str) -> None:
 		if not self.selected_ids:
 			return
+		# Toggle: if item already has the tag, remove it; otherwise add it
+		changed_add = 0
+		changed_remove = 0
 		for mid in list(self.selected_ids):
 			try:
-				self.db.add_media_tags(int(mid), [tag])
+				existing = set(self.db.get_media_tags(int(mid)))
+				if tag in existing:
+					self.db.remove_media_tags(int(mid), [tag])
+					changed_remove += 1
+				else:
+					self.db.add_media_tags(int(mid), [tag])
+					changed_add += 1
 			except Exception:
 				pass
-		# Immediately refresh the grid so newly applied tags are visible without manual reload
+		# Immediately refresh the grid so tag changes are visible
 		self.refresh_records()
-		messagebox.showinfo('Tag Applied', f"Added '{tag}' to {len(self.selected_ids)} item(s)")
+		if changed_add and not changed_remove:
+			messagebox.showinfo('Tag Applied', f"Added '{tag}' to {changed_add} item(s)")
+		elif changed_remove and not changed_add:
+			messagebox.showinfo('Tag Removed', f"Removed '{tag}' from {changed_remove} item(s)")
+		else:
+			messagebox.showinfo('Tags Updated', f"Added '{tag}' to {changed_add}, removed from {changed_remove}")
 
 	def open_hotkey_settings(self) -> None:
+		# Deprecated: hotkeys are managed in the left panel now.
 		dialog = tk.Toplevel(self.root)
-		dialog.title('Hotkey Settings')
+		dialog.title('Hotkey Settings (deprecated)')
 		dialog.grab_set()
-
-		frame = ttk.Frame(dialog, padding=10)
+		frame = ttk.Frame(dialog, padding=12)
 		frame.pack(fill='both', expand=True)
-
-		# Existing
-		row = 0
-		for k in sorted(self.hotkeys.keys()):
-			ttk.Label(frame, text=f'Key: {k}').grid(row=row, column=0, sticky='w')
-			val_var = tk.StringVar(value=self.hotkeys[k])
-			entry = ttk.Entry(frame, textvariable=val_var, width=24)
-			entry.grid(row=row, column=1, padx=6)
-			def save_one(key=k, var=val_var):
-				self.hotkeys[key] = var.get().strip().lower()
-			btn = ttk.Button(frame, text='Save', command=save_one)
-			btn.grid(row=row, column=2, padx=6)
-			def remove_one(key=k):
-				self.hotkeys.pop(key, None)
-				save_hotkeys(self.hotkeys)
-				dialog.destroy()
-				self.open_hotkey_settings()
-			rem = ttk.Button(frame, text='Remove', command=remove_one)
-			rem.grid(row=row, column=3, padx=6)
-			row += 1
-
-		# Add new mapping
-		sep = ttk.Separator(frame)
-		sep.grid(row=row, column=0, columnspan=4, sticky='ew', pady=8)
-		row += 1
-		new_key_var = tk.StringVar()
-		new_tag_var = tk.StringVar()
-		ttk.Label(frame, text='Key').grid(row=row, column=0)
-		new_key = ttk.Entry(frame, textvariable=new_key_var, width=8)
-		new_key.grid(row=row, column=1, sticky='w')
-		row += 1
-		ttk.Label(frame, text='Tag').grid(row=row, column=0)
-		new_tag = ttk.Entry(frame, textvariable=new_tag_var, width=24)
-		new_tag.grid(row=row, column=1, sticky='w')
-		row += 1
-		def add_mapping() -> None:
-			k = (new_key_var.get() or '').strip().lower()
-			t = (new_tag_var.get() or '').strip().lower()
-			if k and t:
-				self.hotkeys[k] = t
-				save_hotkeys(self.hotkeys)
-				messagebox.showinfo('Hotkeys', f"Added mapping {k} -> {t}")
-				dialog.destroy()
-				self.open_hotkey_settings()
-		add_btn = ttk.Button(frame, text='Add', command=add_mapping)
-		add_btn.grid(row=row, column=0, columnspan=2, pady=8)
+		lbl = ttk.Label(frame, text='Manage hotkeys in the left panel.', style='Muted.TLabel')
+		lbl.pack()
+		btn = ttk.Button(frame, text='Close', command=dialog.destroy)
+		btn.pack(pady=8)
 
 
 if __name__ == '__main__':
