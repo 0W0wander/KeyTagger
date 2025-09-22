@@ -46,6 +46,18 @@ def save_hotkeys(hotkeys: Dict[str, str]) -> None:
 	save_config(cfg)
 
 
+def get_dark_mode() -> bool:
+	cfg = load_config()
+	val = cfg.get('dark_mode')
+	return bool(val) if isinstance(val, (bool, int)) else False
+
+
+def set_dark_mode(enabled: bool) -> None:
+	cfg = load_config()
+	cfg['dark_mode'] = bool(enabled)
+	save_config(cfg)
+
+
 def get_last_root_dir() -> Optional[str]:
 	cfg = load_config()
 	val = cfg.get('last_root_dir')
@@ -87,6 +99,8 @@ class KeyTaggerApp:
 	def __init__(self, root: tk.Tk) -> None:
 		self.root = root
 		self.root.title('KeyTagger – Desktop')
+		self.dark_mode: bool = get_dark_mode()
+		self.palette: Dict[str, str] = {}
 		self._setup_theme()
 		self.db = Database(base_dir='.')
 		self.hotkeys: Dict[str, str] = load_hotkeys()
@@ -122,7 +136,7 @@ class KeyTaggerApp:
 		scan_btn.pack(fill='x')
 
 		# Hotkey settings
-		settings_btn = ttk.Button(side, text='Hotkey Settings', command=self.open_hotkey_settings)
+		settings_btn = ttk.Button(side, text='Settings', command=self.open_settings)
 		settings_btn.pack(fill='x', pady=(12, 6))
 		self.last_key_var = tk.StringVar(value='Last key: (none)')
 		last_key_lbl = ttk.Label(side, textvariable=self.last_key_var, style='Muted.TLabel')
@@ -134,7 +148,7 @@ class KeyTaggerApp:
 		main.rowconfigure(0, weight=1)
 		main.columnconfigure(0, weight=1)
 
-		self.canvas = tk.Canvas(main, highlightthickness=0, background='#f6f7fb')
+		self.canvas = tk.Canvas(main, highlightthickness=0, background=self.palette.get('canvas_bg', '#f6f7fb'))
 		scroll_y = ttk.Scrollbar(main, orient='vertical', command=self.canvas.yview)
 		self.grid_frame = ttk.Frame(self.canvas, style='App.TFrame')
 		self.grid_frame.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
@@ -147,7 +161,7 @@ class KeyTaggerApp:
 		self._activate_mousewheel()
 
 		# Apply app background
-		self.root.configure(background='#e9edf5')
+		self.root.configure(background=self.palette.get('root_bg', '#e9edf5'))
 
 	def _setup_theme(self) -> None:
 		style = ttk.Style()
@@ -155,43 +169,75 @@ class KeyTaggerApp:
 			style.theme_use('clam')
 		except Exception:
 			pass
+		# Palette
+		if self.dark_mode:
+			self.palette = {
+				'bg': '#0f172a',
+				'side_bg': '#111827',
+				'text': '#f3f4f6',
+				'muted': '#9ca3af',
+				'primary': '#3b82f6',
+				'primary_active': '#2563eb',
+				'accent': '#34d399',
+				'accent_active': '#10b981',
+				'card_bg': '#1f2937',
+				'card_hover_bg': '#273244',
+				'selected_bg': '#0b253c',
+				'tag_bg': '#1e293b',
+				'tag_fg': '#93c5fd',
+				'canvas_bg': '#0f172a',
+				'root_bg': '#0b1220',
+			}
+		else:
+			self.palette = {
+				'bg': '#f6f7fb',
+				'side_bg': '#ffffff',
+				'text': '#111827',
+				'muted': '#6b7280',
+				'primary': '#2563eb',
+				'primary_active': '#1d4ed8',
+				'accent': '#10b981',
+				'accent_active': '#059669',
+				'card_bg': '#ffffff',
+				'card_hover_bg': '#f3f4f6',
+				'selected_bg': '#e7f0ff',
+				'tag_bg': '#eef2ff',
+				'tag_fg': '#3730a3',
+				'canvas_bg': '#f6f7fb',
+				'root_bg': '#e9edf5',
+			}
+
 		# Fonts
 		base_font = tkfont.nametofont('TkDefaultFont')
 		base_font.configure(family='Segoe UI', size=10)
 		title_font = tkfont.nametofont('TkHeadingFont') if 'TkHeadingFont' in tkfont.names() else base_font.copy()
 		title_font.configure(family='Segoe UI', size=14, weight='bold')
 
-		# Colors
-		bg = '#f6f7fb'
-		side_bg = '#ffffff'
-		text = '#111827'
-		muted = '#6b7280'
-		primary = '#2563eb'
-		primary_active = '#1d4ed8'
-		accent = '#10b981'
-		accent_active = '#059669'
-		card_bg = '#ffffff'
-		selected_bg = '#e7f0ff'
-		tag_bg = '#eef2ff'
-		tag_fg = '#3730a3'
-
 		# Base styles
-		style.configure('App.TFrame', background=bg)
-		style.configure('Side.TFrame', background=side_bg)
-		style.configure('TLabel', background=side_bg, foreground=text)
-		style.configure('Muted.TLabel', background=side_bg, foreground=muted)
-		style.configure('Title.TLabel', background=side_bg, foreground=text, font=title_font)
+		style.configure('App.TFrame', background=self.palette['bg'])
+		style.configure('Side.TFrame', background=self.palette['side_bg'])
+		style.configure('TLabel', background=self.palette['side_bg'], foreground=self.palette['text'])
+		style.configure('Muted.TLabel', background=self.palette['side_bg'], foreground=self.palette['muted'])
+		style.configure('Title.TLabel', background=self.palette['side_bg'], foreground=self.palette['text'], font=title_font)
 
 		# Buttons
 		style.configure('TButton', padding=(10, 6))
-		style.configure('Primary.TButton', background=primary, foreground='#ffffff')
-		style.map('Primary.TButton', background=[('active', primary_active), ('pressed', primary_active)])
-		style.configure('Accent.TButton', background=accent, foreground='#ffffff')
-		style.map('Accent.TButton', background=[('active', accent_active), ('pressed', accent_active)])
+		style.configure('Primary.TButton', background=self.palette['primary'], foreground='#ffffff')
+		style.map('Primary.TButton', background=[('active', self.palette['primary_active']), ('pressed', self.palette['primary_active'])])
+		style.configure('Accent.TButton', background=self.palette['accent'], foreground='#ffffff')
+		style.map('Accent.TButton', background=[('active', self.palette['accent_active']), ('pressed', self.palette['accent_active'])])
 
 		# Cards and tags
-		style.configure('Card.TFrame', background=card_bg)
-		style.configure('Tag.TLabel', background=tag_bg, foreground=tag_fg, padding=(6, 2))
+		style.configure('Card.TFrame', background=self.palette['card_bg'])
+		style.configure('Tag.TLabel', background=self.palette['tag_bg'], foreground=self.palette['tag_fg'], padding=(6, 2))
+
+		# Update container backgrounds if already created
+		try:
+			self.root.configure(background=self.palette['root_bg'])
+			if hasattr(self, 'canvas') and isinstance(self.canvas, tk.Canvas):
+				self.canvas.configure(background=self.palette['canvas_bg'])
+		except Exception:
+			pass
 
 	def _bind_mousewheel(self, widget: tk.Widget) -> None:
 		widget.bind('<Enter>', lambda e: self._activate_mousewheel())
@@ -287,7 +333,7 @@ class KeyTaggerApp:
 			def _on_enter(e, rid=rec.id, f=frame):
 				style = ttk.Style()
 				style_name = f'Card{rid}.TFrame'
-				style.configure(style_name, background='#f3f4f6')
+				style.configure(style_name, background=self.palette.get('card_hover_bg', '#f3f4f6'))
 				f.configure(style=style_name)
 			def _on_leave(e, rid=rec.id, f=frame):
 				self._update_card_style(f, rid)
@@ -337,8 +383,32 @@ class KeyTaggerApp:
 		selected = media_id in self.selected_ids
 		style = ttk.Style()
 		style_name = f'Card{media_id}.TFrame'
-		style.configure(style_name, background=('#e7f0ff' if selected else '#ffffff'))
+		style.configure(style_name, background=(self.palette.get('selected_bg', '#e7f0ff') if selected else self.palette.get('card_bg', '#ffffff')))
 		frame.configure(style=style_name)
+
+	def open_settings(self) -> None:
+		dialog = tk.Toplevel(self.root)
+		dialog.title('Settings')
+		dialog.transient(self.root)
+		dialog.grab_set()
+		frm = ttk.Frame(dialog, padding=12)
+		frm.pack(fill='both', expand=True)
+		dark_var = tk.BooleanVar(value=bool(self.dark_mode))
+		chk = ttk.Checkbutton(frm, text='Enable dark mode', variable=dark_var, command=lambda: self._toggle_dark_mode(dark_var.get()))
+		chk.pack(anchor='w', pady=(0, 8))
+		btn_hotkeys = ttk.Button(frm, text='Hotkey Settings', command=lambda: [dialog.destroy(), self.open_hotkey_settings()])
+		btn_hotkeys.pack(anchor='w')
+
+	def _toggle_dark_mode(self, enabled: bool) -> None:
+		self.dark_mode = bool(enabled)
+		set_dark_mode(self.dark_mode)
+		self._setup_theme()
+		# Refresh card styles and canvas bg
+		try:
+			self.canvas.configure(background=self.palette.get('canvas_bg', '#f6f7fb'))
+		except Exception:
+			pass
+		self._refresh_card_styles()
 
 	def toggle_select(self, media_id: int) -> None:
 		if media_id in self.selected_ids:
