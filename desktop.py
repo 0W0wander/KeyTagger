@@ -7,6 +7,8 @@ from contextlib import closing
 
 import requests
 import webview
+from pynput import keyboard
+import json
 
 
 APP_FILE = "app.py"
@@ -95,6 +97,46 @@ def start_streamlit_subprocess(port: int) -> subprocess.Popen:
 	return proc
 
 
+def start_hotkey_bridge(window: webview.Window) -> None:
+	pressed_ctrl: bool = False
+
+	def on_press(key: keyboard.Key | keyboard.KeyCode) -> None:
+		nonlocal pressed_ctrl
+		try:
+			if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+				pressed_ctrl = True
+				return
+			k = getattr(key, 'char', None)
+			if not k:
+				return
+			k = k.lower()
+		except Exception:
+			return
+
+		key_str = ('ctrl+' + k) if pressed_ctrl else k
+		# Build robust JS using JSON to safely embed key string
+		js = (
+			"(function(){var k=" + json.dumps(key_str) + ";"
+			"var wrap=document.querySelector('[data-hk-wrap='+k+']');"
+			"var btn=wrap?wrap.querySelector('button'):null;"
+			"if(!btn){btn=document.querySelector('[title=\"HK:'+k+'\"]');}"
+			"if(btn){btn.click(); return true;} return false;})()"
+		)
+		try:
+			window.evaluate_js(js)
+		except Exception:
+			pass
+
+	def on_release(key: keyboard.Key | keyboard.KeyCode) -> None:
+		nonlocal pressed_ctrl
+		if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+			pressed_ctrl = False
+
+	listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+	listener.daemon = True
+	listener.start()
+
+
 def main() -> None:
 	port = int(os.environ.get("KEYTAGGER_PORT", os.environ.get("KEYTAG_PORT", str(find_free_port()))))
 	url = f"http://127.0.0.1:{port}"
@@ -111,7 +153,8 @@ def main() -> None:
 			raise RuntimeError("Streamlit did not start in time")
 
 		window = webview.create_window("KeyTagger – Media Tagger", url, width=1200, height=800, resizable=True)
-		webview.start()
+		# Start hotkey bridge after the window is ready
+		webview.start(start_hotkey_bridge, (window,))
 	finally:
 		if proc is not None and proc.poll() is None:
 			try:

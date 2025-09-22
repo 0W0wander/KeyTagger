@@ -1,6 +1,10 @@
 import os
 import json
 import streamlit as st
+try:
+	from streamlit_keypress import key_press_events  # type: ignore
+except Exception:
+	key_press_events = None  # component optional; we guard usage
 from PIL import Image
 
 from keytagger.db import Database
@@ -49,6 +53,7 @@ st.markdown(
 	.card.selected .selbtn-box button { background:#2563eb !important; color:#fff !important; border-color:#1e40af !important; }
 	.hk-hidden { position:absolute; left:-10000px; top:0; width:1px; height:1px; opacity:0; }
 	.hk-debug { position:fixed; bottom:10px; left:10px; background:rgba(0,0,0,0.6); color:#fff; padding:4px 8px; border-radius:4px; font-size:12px; z-index:2000; pointer-events:none; }
+	.hk-console { border:1px solid #e5e7eb; background:#f9fafb; border-radius:6px; padding:8px; min-height:48px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:#111827; }
 	</style>
 	""",
 	unsafe_allow_html=True,
@@ -266,6 +271,8 @@ with st.sidebar:
 		if st.button("Add Hotkey Setting"):
 			st.session_state["show_hotkey_settings"] = True
 			st.session_state["capture_hotkey"] = True
+	# Mini console for key debug
+	st.markdown("<div id='hk_console' class='hk-console'>Last key: (none)</div>", unsafe_allow_html=True)
 	st.divider()
 	st.header("Filters")
 	search = st.text_input("Search filename contains")
@@ -390,39 +397,40 @@ for start in range(0, len(records), cols_per_row):
 				st.markdown("</div>", unsafe_allow_html=True)
 				# end card container
 
-# Global key listener: map defined keys to query param change
-# Use a tiny script to push ?hotkey=<key> without full page reload
-if st.session_state.get("hotkeys"):
-	keys_list = sorted(list(st.session_state["hotkeys"].keys()))
-	keys_json = json.dumps(keys_list)
-	listener_html = f"""
-	<script>
-	(function() {{
-	  const ALLOWED = new Set({keys_json});
-	  if (window.__keytagger_key_handler) {{
-	    window.removeEventListener('keydown', window.__keytagger_key_handler, true);
-	  }}
-	  function __keytagger_key_handler(e) {{
-	    if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
-	    if (e.ctrlKey || e.metaKey || e.altKey) return;
-	    const k = (e.key || '').toLowerCase();
-	    if (!ALLOWED.has(k)) return;
-	    // Prefer our dedicated hidden wrapper for consistent selection and show a tiny debug banner
-	    try {{ document.querySelector('.hk-debug').textContent = 'key: ' + k; }} catch (e) {{}}
-	    let btn = null;
-	    const wrap = document.querySelector(`[data-hk-wrap="${{k}}"]`);
-	    if (wrap) {{ btn = wrap.querySelector('button'); }}
-	    if (!btn) {{ btn = document.querySelector(`[title="HK:${{k}}"]`); }}
-	    if (!btn) {{ btn = Array.from(document.querySelectorAll('button')).find(b=>b.title===`HK:${{k}}`||b.innerText.trim()==`HK:${{k}}`||b.getAttribute('aria-label')===`HK:${{k}}`||b.getAttribute('data-hk')===k); }}
-	    if (btn) {{ btn.click(); }}
-	  }}
-	  window.__keytagger_key_handler = __keytagger_key_handler;
-	  window.addEventListener('keydown', __keytagger_key_handler, true);
-	}})();
-	</script>
-	<div class="hk-debug">ready</div>
-	"""
-	st.markdown(listener_html, unsafe_allow_html=True)
+# Global key listener and mini console: always render so we can see detections
+keys_list = sorted(list((st.session_state.get("hotkeys") or {}).keys()))
+keys_json = json.dumps(keys_list)
+listener_html = ("""
+<script>
+(function() {
+  const ALLOWED = new Set(REPLACE_KEYS_JSON);
+  if (window.__keytagger_key_handler) {
+    window.removeEventListener('keydown', window.__keytagger_key_handler, true);
+    document.removeEventListener('keydown', window.__keytagger_key_handler, true);
+    if (document.body) document.body.removeEventListener('keydown', window.__keytagger_key_handler, true);
+  }
+  function __keytagger_key_handler(e) {
+    try { var el = document.getElementById('hk_console'); if (el) el.textContent = 'Last key: ' + (e.key || '').toLowerCase(); } catch (err) {}
+    if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = (e.key || '').toLowerCase();
+    if (!ALLOWED.has(k)) return;
+    let btn = null;
+    const wrap = document.querySelector(`[data-hk-wrap="${k}"]`);
+    if (wrap) { btn = wrap.querySelector('button'); }
+    if (!btn) { btn = document.querySelector(`[title="HK:${k}"]`); }
+    if (!btn) { btn = Array.from(document.querySelectorAll('button')).find(b=>b.title===`HK:${k}`||b.innerText.trim()==`HK:${k}`||b.getAttribute('aria-label')===`HK:${k}`); }
+    if (btn) { btn.click(); }
+  }
+  window.__keytagger_key_handler = __keytagger_key_handler;
+  try { (window.top || window).addEventListener('keydown', __keytagger_key_handler, true); } catch (e) { window.addEventListener('keydown', __keytagger_key_handler, true); }
+  document.addEventListener('keydown', __keytagger_key_handler, true);
+  if (document.body) { document.body.addEventListener('keydown', __keytagger_key_handler, true); }
+})();
+</script>
+<div class="hk-debug">ready</div>
+""").replace("REPLACE_KEYS_JSON", keys_json)
+st.markdown(listener_html, unsafe_allow_html=True)
 
 # (capture listener removed; direct input used instead)
 

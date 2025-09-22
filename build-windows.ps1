@@ -6,18 +6,16 @@ $ErrorActionPreference = "Stop"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build
 
-# Build
+# Build (Tkinter desktop)
 pyinstaller `
 	--name KeyTagger `
 	--noconsole `
-	--add-data "app.py;." `
 	--add-data "keytagger;keytagger" `
 	--add-data "requirements.txt;." `
-	--hidden-import streamlit `
 	--hidden-import PIL `
 	--hidden-import imagehash `
 	--hidden-import cv2 `
 	--hidden-import numpy `
-	desktop.py
+	tkapp.py
 
 Write-Host "Build complete. See dist/KeyTagger" -ForegroundColor Green
