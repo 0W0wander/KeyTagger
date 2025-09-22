@@ -25,6 +25,7 @@ st.markdown(
 	.card-name { font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 	.tag-row { display:flex; align-items:center; gap:6px; overflow:hidden; }
 	.actions { display:flex; align-items:center; gap:6px; }
+	.block-link { display:block; text-decoration:none; color:inherit; }
 	/* Make popover triggers look like chips and equal to tag size */
 	div[data-testid="stPopover"], div[data-testid="stPopoverIcon"] { display:inline-block; }
 	div[data-testid="stPopover"] > button, div[data-testid="stPopoverIcon"] > button { padding:2px 8px !important; border-radius:12px !important; background:rgba(128,128,128,0.2) !important; border:0 !important; font-size:12px !important; height:22px !important; line-height:16px !important; }
@@ -37,6 +38,17 @@ st.markdown(
 	[data-testid="stVerticalBlock"]:has(> [data-testid="element-container"] .card-sentinel[data-selected="1"]) {
 		outline:2px solid #2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.25); background:rgba(37,99,235,0.05); border-radius:8px;
 	}
+	/* Make entire card area show pointer when sentinel is present and set positioning context */
+	[data-testid="stVerticalBlock"]:has(> [data-testid="element-container"] .card-sentinel) { cursor:pointer; position:relative; }
+	/* Keep interactive UI above any overlays */
+	[data-testid="stVerticalBlock"] :where(button, [data-testid="stPopover"], input, textarea) { position:relative; z-index:2; }
+	/* Invisible overlay buttons for card background and thumbnail */
+	[id^="thumbwrap_"] { position:relative; }
+	.selbtn-box { position:absolute; top:6px; left:6px; z-index:3; }
+	.selbtn-box button { width:28px !important; height:28px !important; padding:0 !important; border-radius:6px !important; background:#f3f4f6 !important; border:1px solid #e5e7eb !important; }
+	.card.selected .selbtn-box button { background:#2563eb !important; color:#fff !important; border-color:#1e40af !important; }
+	.hk-hidden { position:absolute; left:-10000px; top:0; width:1px; height:1px; opacity:0; }
+	.hk-debug { position:fixed; bottom:10px; left:10px; background:rgba(0,0,0,0.6); color:#fff; padding:4px 8px; border-radius:4px; font-size:12px; z-index:2000; pointer-events:none; }
 	</style>
 	""",
 	unsafe_allow_html=True,
@@ -69,7 +81,14 @@ def _save_config(data: dict) -> None:
 try:
 	select_param = st.query_params.get("select")
 	if select_param:
-		st.session_state["selected_media_id"] = int(str(select_param))
+		# Multi-select: toggle membership
+		sel_id = int(str(select_param))
+		ids = st.session_state.get("selected_media_ids") or []
+		if sel_id in ids:
+			ids = [i for i in ids if i != sel_id]
+		else:
+			ids = [*ids, sel_id]
+		st.session_state["selected_media_ids"] = ids
 		# Clear the param so reloads don't re-select unexpectedly
 		try:
 			del st.query_params["select"]
@@ -80,19 +99,33 @@ try:
 	hotkey_param = st.query_params.get("hotkey")
 	if hotkey_param:
 		key = str(hotkey_param).lower()
-		selected_id = st.session_state.get("selected_media_id")
-		if selected_id and key in st.session_state.get("hotkeys", {}):
+		selected_ids = st.session_state.get("selected_media_ids") or []
+		if not selected_ids:
+			legacy_id = st.session_state.get("selected_media_id")
+			if legacy_id:
+				selected_ids = [int(legacy_id)]
+		if selected_ids and key in st.session_state.get("hotkeys", {}):
 			tag_to_add = st.session_state["hotkeys"][key]
 			if tag_to_add:
 				try:
 					db: Database = st.session_state["db"]
-					db.add_media_tags(int(selected_id), [tag_to_add])
-					st.toast(f"Added tag '{tag_to_add}' via hotkey '{key}'")
+					for _mid in selected_ids:
+						db.add_media_tags(int(_mid), [tag_to_add])
+					st.toast(f"Added tag '{tag_to_add}' to {len(selected_ids)}")
 				except Exception:
 					pass
 		# Clear param after handling
 		try:
 			del st.query_params["hotkey"]
+		except Exception:
+			pass
+
+	# Handle capture key flow: ?capture_key=y will set next key pressed into session
+	capture_flag = st.query_params.get("capture_key")
+	if capture_flag:
+		st.session_state["capture_hotkey"] = True
+		try:
+			del st.query_params["capture_key"]
 		except Exception:
 			pass
 
@@ -105,15 +138,6 @@ try:
 		st.session_state["show_hotkey_settings"] = True
 		try:
 			del st.query_params["captured"]
-		except Exception:
-			pass
-
-	# Handle capture key flow: ?capture_key=y will set next key pressed into session
-	capture_flag = st.query_params.get("capture_key")
-	if capture_flag:
-		st.session_state["capture_hotkey"] = True
-		try:
-			del st.query_params["capture_key"]
 		except Exception:
 			pass
 except Exception:
@@ -158,6 +182,8 @@ db: Database = st.session_state["db"]
 # Selection state
 if "selected_media_id" not in st.session_state:
 	st.session_state["selected_media_id"] = None
+if "selected_media_ids" not in st.session_state:
+	st.session_state["selected_media_ids"] = []
 
 # Hotkey map state
 if "hotkeys" not in st.session_state:
@@ -287,22 +313,61 @@ for start in range(0, len(records), cols_per_row):
 			is_selected = st.session_state.get("selected_media_id") == rec.id
 			card = st.container()
 			with card:
-				st.markdown(f"<span class='card-sentinel' data-selected=\"{'1' if is_selected else '0'}\"></span>", unsafe_allow_html=True)
+				selected_ids = st.session_state.get("selected_media_ids") or []
+				is_selected = rec.id in selected_ids
+				st.markdown(
+					f"<div id='cardwrap_{rec.id}'>",
+					unsafe_allow_html=True,
+				)
 				# Use square thumbnail to ensure uniform size
 				sq = build_square_thumbnail(rec.thumbnail_path) if rec.thumbnail_path else None
 				if sq and os.path.exists(sq):
+					st.markdown(f"<div id='thumbwrap_{rec.id}'>", unsafe_allow_html=True)
 					st.image(sq, use_column_width=True)
+					# Top-left square select button
+					with st.container():
+						st.markdown("<div class='selbtn-box'>", unsafe_allow_html=True)
+						if st.button("", key=f"selbtn_{rec.id}"):
+							ids = st.session_state.get("selected_media_ids") or []
+							if rec.id in ids:
+								ids = [i for i in ids if i != rec.id]
+							else:
+								ids = [*ids, rec.id]
+							st.session_state["selected_media_ids"] = ids
+							print(f"[select] toggled id={rec.id} now_selected={rec.id in ids} total_selected={len(ids)}")
+						st.markdown("</div>", unsafe_allow_html=True)  # close selbtn-box
+					st.markdown("</div>", unsafe_allow_html=True)  # close thumbwrap
 				elif rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+					st.markdown(f"<div id='thumbwrap_{rec.id}'>", unsafe_allow_html=True)
 					st.image(rec.thumbnail_path, use_column_width=True)
+					with st.container():
+						st.markdown("<div class='selbtn-box'>", unsafe_allow_html=True)
+						if st.button("", key=f"selbtn_{rec.id}"):
+							ids = st.session_state.get("selected_media_ids") or []
+							if rec.id in ids:
+								ids = [i for i in ids if i != rec.id]
+							else:
+								ids = [*ids, rec.id]
+							st.session_state["selected_media_ids"] = ids
+							print(f"[select] toggled id={rec.id} now_selected={rec.id in ids} total_selected={len(ids)}")
+						st.markdown("</div>", unsafe_allow_html=True)  # close selbtn-box
+					st.markdown("</div>", unsafe_allow_html=True)  # close thumbwrap
 				else:
 					st.empty()
 
+				# Render selection sentinel AFTER possible toggle so highlight updates immediately
+				is_selected_after = rec.id in (st.session_state.get("selected_media_ids") or [])
+				st.markdown(
+					f"<span class='card-sentinel' data-media-id=\"{rec.id}\" data-selected=\"{'1' if is_selected_after else '0'}\"></span><span data-card-id=\"{rec.id}\" style=\"display:none\"></span>",
+					unsafe_allow_html=True,
+				)
+
 				# Filename
-				st.markdown(f"<div class='card-name'>{rec.file_name}</div>", unsafe_allow_html=True)
+				st.markdown(f"<div class='card-name'><a class='block-link' href='?select={rec.id}' aria-label='Select card'>{rec.file_name}</a></div>", unsafe_allow_html=True)
 
 				# Tags row with chip-sized add button inline
 				current_tags = db.get_media_tags(rec.id)
-				chips_html = "".join([f"<span class='tag-chip'>{t}</span>" for t in current_tags]) if current_tags else "<span class='tag-chip'>(none)</span>"
+				chips_html = "".join([f"<span class='tag-chip'><a class='block-link' href='?select={rec.id}' aria-label='Select card'>{t}</a></span>" for t in current_tags]) if current_tags else "<span class='tag-chip'>(none)</span>"
 				st.markdown(f"<div class='tag-row'>{chips_html}", unsafe_allow_html=True)
 				with st.popover("+"):
 					new_tag = st.text_input("New tag", key=f"newtag_{rec.id}")
@@ -311,15 +376,10 @@ for start in range(0, len(records), cols_per_row):
 						if new_tag_norm:
 							db.add_media_tags(rec.id, [new_tag_norm])
 							st.toast("Tag added")
-							st.rerun()
 				st.markdown("</div>", unsafe_allow_html=True)
 
-				# Actions row: Select and View chips
+				# Actions row: View chip only
 				st.markdown("<div class='actions'>", unsafe_allow_html=True)
-				label = "Selected" if is_selected else "Select"
-				if st.button(label, key=f"select_{rec.id}"):
-					st.session_state["selected_media_id"] = None if is_selected else rec.id
-					st.rerun()
 				with st.popover("View"):
 					if rec.file_path and os.path.exists(rec.file_path):
 						st.image(rec.file_path, use_column_width=True)
@@ -327,6 +387,7 @@ for start in range(0, len(records), cols_per_row):
 						st.image(rec.thumbnail_path, use_column_width=True)
 				st.markdown("</div>", unsafe_allow_html=True)
 				# end actions
+				st.markdown("</div>", unsafe_allow_html=True)
 				# end card container
 
 # Global key listener: map defined keys to query param change
@@ -338,51 +399,62 @@ if st.session_state.get("hotkeys"):
 	<script>
 	(function() {{
 	  const ALLOWED = new Set({keys_json});
-	  if (window.__keytagger_keys_installed) return;
-	  window.__keytagger_keys_installed = true;
-	  window.addEventListener('keydown', function(e) {{
+	  if (window.__keytagger_key_handler) {{
+	    window.removeEventListener('keydown', window.__keytagger_key_handler, true);
+	  }}
+	  function __keytagger_key_handler(e) {{
 	    if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
 	    if (e.ctrlKey || e.metaKey || e.altKey) return;
 	    const k = (e.key || '').toLowerCase();
-	    if (window.__capture_next_key) return; // let capture handler handle it
 	    if (!ALLOWED.has(k)) return;
-	    try {{
-	      const url = new URL(window.location.href);
-	      url.searchParams.set('hotkey', k);
-	      window.location.assign(url.toString());
-	    }} catch (_) {{}}
-	  }}, true);
+	    // Prefer our dedicated hidden wrapper for consistent selection and show a tiny debug banner
+	    try {{ document.querySelector('.hk-debug').textContent = 'key: ' + k; }} catch (e) {{}}
+	    let btn = null;
+	    const wrap = document.querySelector(`[data-hk-wrap="${{k}}"]`);
+	    if (wrap) {{ btn = wrap.querySelector('button'); }}
+	    if (!btn) {{ btn = document.querySelector(`[title="HK:${{k}}"]`); }}
+	    if (!btn) {{ btn = Array.from(document.querySelectorAll('button')).find(b=>b.title===`HK:${{k}}`||b.innerText.trim()==`HK:${{k}}`||b.getAttribute('aria-label')===`HK:${{k}}`||b.getAttribute('data-hk')===k); }}
+	    if (btn) {{ btn.click(); }}
+	  }}
+	  window.__keytagger_key_handler = __keytagger_key_handler;
+	  window.addEventListener('keydown', __keytagger_key_handler, true);
 	}})();
 	</script>
+	<div class="hk-debug">ready</div>
 	"""
 	st.markdown(listener_html, unsafe_allow_html=True)
 
-# Install capture listener when capture mode is active
-if st.session_state.get("capture_hotkey"):
-	capture_html = """
-	<script>
-	(function(){
-	  if (window.__keytagger_capture_installed) return;
-	  window.__keytagger_capture_installed = true;
-	  window.__capture_next_key = true;
-	  function __kt_handleCapture(e){
-	    if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
-	    if (e.ctrlKey || e.metaKey || e.altKey) return;
-	    const k = (e.key || '').toLowerCase();
-	    e.preventDefault();
-	    window.__capture_next_key = false;
-	    window.removeEventListener('keydown', __kt_handleCapture, true);
-	    try {
-	      const url = new URL(window.location.href);
-	      url.searchParams.set('captured', k);
-	      window.location.assign(url.toString());
-	    } catch(_) {}
-	  }
-	  window.addEventListener('keydown', __kt_handleCapture, true);
-	})();
-	</script>
-	"""
-	st.markdown(capture_html, unsafe_allow_html=True)
+# (capture listener removed; direct input used instead)
+
+# Hidden hotkey triggers (rendered once so JS can click them)
+st.markdown("<div class='hk-hidden' data-hk-wrap-root>", unsafe_allow_html=True)
+hk_pressed: str | None = None
+for _k in (st.session_state.get("hotkeys") or {}).keys():
+	# Open wrapper so the button becomes its child
+	st.markdown(f"<div data-hk-wrap='{_k}'>", unsafe_allow_html=True)
+	if st.button(f"HK:{_k}", key=f"hkpress_{_k}", help=f"hk:{_k}"):
+		hk_pressed = _k
+	# Close wrapper
+	st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+# If a hidden hotkey button was pressed, apply tags to all selected
+if hk_pressed:
+	selected_ids = st.session_state.get("selected_media_ids") or []
+	if not selected_ids:
+		legacy_id = st.session_state.get("selected_media_id")
+		if legacy_id:
+			selected_ids = [int(legacy_id)]
+	tag_to_add = (st.session_state.get("hotkeys") or {}).get(hk_pressed)
+	if tag_to_add and selected_ids:
+		try:
+			db: Database = st.session_state["db"]
+			for _mid in selected_ids:
+				db.add_media_tags(int(_mid), [tag_to_add])
+			print(f"[hotkey] applied key={hk_pressed} tag={tag_to_add} to count={len(selected_ids)} ids={selected_ids}")
+			st.toast(f"Added '{tag_to_add}' to {len(selected_ids)} item(s)")
+		except Exception:
+			print(f"[hotkey] error applying tag for key={hk_pressed}")
 
 # Hotkey Settings modal
 show_modal = st.session_state.get("show_hotkey_settings")
@@ -411,20 +483,12 @@ if show_modal:
 
 	st.markdown("---")
 	st.markdown("Add new mapping")
-	c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+	c1, c2, c3 = st.columns([2, 4, 1])
 	with c1:
-		capture_on = bool(st.session_state.get("capture_hotkey"))
-		label = "Press any key..." if capture_on else "Capture key"
-		if st.button(label, key="hk_capture_btn"):
-			st.session_state["capture_hotkey"] = True
-			# install a capture script
-			st.session_state["_install_capture_script"] = True
-			st.rerun()
+		new_key = st.text_input("Key", key="hk_new_key", placeholder="type one key")
 	with c2:
-		new_key = st.text_input("Key", key="hk_new_key", disabled=True)
+		new_tag = st.text_input("Tag", key="hk_new_tag", placeholder="e.g. cat")
 	with c3:
-		new_tag = st.text_input("Tag", key="hk_new_tag")
-	with c4:
 		if st.button("Add", key="hk_add_btn"):
 			k = (st.session_state.get("hk_new_key") or "").strip().lower()
 			t = (new_tag or "").strip().lower()
@@ -432,10 +496,7 @@ if show_modal:
 				hotkeys[k] = t
 				st.session_state["hotkeys"] = hotkeys
 				save_hotkeys(hotkeys)
-				st.session_state["hk_new_key"] = ""
-				st.session_state["hk_new_tag"] = ""
 				st.toast("Hotkey added")
-				st.rerun()
 
 	# Footer buttons
 	f1, f2 = st.columns([1, 1])
@@ -452,10 +513,10 @@ if show_modal:
 			save_hotkeys(updated)
 			st.toast("Saved hotkeys")
 			st.session_state["show_hotkey_settings"] = False
-			st.rerun()
 	with f2:
 		if st.button("Close", key="hk_close"):
 			st.session_state["show_hotkey_settings"] = False
-			st.rerun()
 
 	st.markdown("</div>", unsafe_allow_html=True)
+
+# removed URL-navigation click JS to prevent reloads
