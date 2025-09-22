@@ -247,6 +247,7 @@ class Database:
         offset: int = 0,
         order_by: str = "modified_time_utc DESC, id DESC",
         root_dir: Optional[str] = None,
+        tags_match_all: bool = True,
     ) -> Tuple[List[MediaRecord], int]:
         with self.connect() as conn:
             cur = conn.cursor()
@@ -260,10 +261,16 @@ class Database:
 
             if required_tags:
                 placeholders = ",".join(["?"] * len(required_tags))
-                where_clauses.append(
-                    f"id IN (SELECT media_id FROM media_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders})) GROUP BY media_id HAVING COUNT(DISTINCT tag_id) = {len(required_tags)})"
-                )
-                params.extend([t.strip().lower() for t in required_tags])
+                tag_params = [t.strip().lower() for t in required_tags]
+                if tags_match_all:
+                    where_clauses.append(
+                        f"id IN (SELECT media_id FROM media_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders})) GROUP BY media_id HAVING COUNT(DISTINCT tag_id) = {len(required_tags)})"
+                    )
+                else:
+                    where_clauses.append(
+                        f"id IN (SELECT DISTINCT media_id FROM media_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders})))"
+                    )
+                params.extend(tag_params)
 
             if root_dir:
                 where_clauses.append("root_dir = ?")

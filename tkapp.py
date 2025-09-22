@@ -138,6 +138,18 @@ class KeyTaggerApp:
 		scan_btn = ttk.Button(side, text='Scan Folder', command=self.scan_folder, style='Accent.TButton')
 		scan_btn.pack(fill='x')
 
+		# Tag filter (comma-separated). Default to OR behavior; a toggle switches to AND
+		filter_lbl = ttk.Label(side, text='Filter by tags (comma-separated)', style='Muted.TLabel')
+		filter_lbl.pack(anchor='w', pady=(10, 2))
+		self.filter_tags_var = tk.StringVar()
+		filter_entry = ttk.Entry(side, textvariable=self.filter_tags_var, width=40)
+		filter_entry.pack(fill='x')
+		self.filter_match_all_var = tk.BooleanVar(value=False)  # False = OR (default)
+		chk_all = ttk.Checkbutton(side, text='Match ALL tags (AND)', variable=self.filter_match_all_var, command=self.apply_filters)
+		chk_all.pack(anchor='w', pady=(4, 8))
+		btn_apply_filter = ttk.Button(side, text='Apply Filter', command=self.apply_filters, style='Small.TButton')
+		btn_apply_filter.pack(anchor='w')
+
 		# Hotkey settings
 		settings_btn = ttk.Button(side, text='Settings', command=self.open_settings)
 		settings_btn.pack(fill='x', pady=(12, 6))
@@ -381,10 +393,14 @@ class KeyTaggerApp:
 
 	def refresh_records(self) -> None:
 		root_dir = self.folder_var.get().strip() or None
+		# Build filters
+		tags_text = (self.filter_tags_var.get() or '').strip()
+		required_tags = [t.strip().lower() for t in tags_text.split(',') if t.strip()] or None
+		match_all = bool(self.filter_match_all_var.get())
 		try:
-			records, total = self.db.query_media(required_tags=None, search_text=None, limit=500, offset=0, root_dir=root_dir)
+			records, total = self.db.query_media(required_tags=required_tags, search_text=None, limit=500, offset=0, root_dir=root_dir, tags_match_all=match_all)
 		except TypeError:
-			records, total = self.db.query_media(required_tags=None, search_text=None, limit=500, offset=0)
+			records, total = self.db.query_media(required_tags=required_tags, search_text=None, limit=500, offset=0)
 			if root_dir:
 				records = [r for r in records if os.path.abspath(r.root_dir) == os.path.abspath(root_dir)]
 		self.records = records
@@ -393,6 +409,9 @@ class KeyTaggerApp:
 			w.destroy()
 		self.photo_cache.clear()
 		self._render_grid()
+
+	def apply_filters(self) -> None:
+		self.refresh_records()
 
 	def _render_grid(self) -> None:
 		cols = max(1, self._cols)
