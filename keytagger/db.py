@@ -200,6 +200,7 @@ class Database:
         limit: int = 200,
         offset: int = 0,
         order_by: str = "modified_time_utc DESC, id DESC",
+        root_dir: Optional[str] = None,
     ) -> Tuple[List[MediaRecord], int]:
         with self.connect() as conn:
             cur = conn.cursor()
@@ -217,6 +218,10 @@ class Database:
                     f"id IN (SELECT media_id FROM media_tags WHERE tag_id IN (SELECT id FROM tags WHERE name IN ({placeholders})) GROUP BY media_id HAVING COUNT(DISTINCT tag_id) = {len(required_tags)})"
                 )
                 params.extend([t.strip().lower() for t in required_tags])
+
+            if root_dir:
+                where_clauses.append("root_dir = ?")
+                params.append(os.path.abspath(root_dir))
 
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
