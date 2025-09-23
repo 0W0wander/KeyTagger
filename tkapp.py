@@ -46,6 +46,21 @@ def save_hotkeys(hotkeys: Dict[str, str]) -> None:
 	save_config(cfg)
 
 
+def get_thumb_size() -> int:
+	cfg = load_config()
+	val = cfg.get('thumb_size')
+	try:
+		return int(val)
+	except Exception:
+		return THUMB_SIZE
+
+
+def set_thumb_size(px: int) -> None:
+	cfg = load_config()
+	cfg['thumb_size'] = int(px)
+	save_config(cfg)
+
+
 def get_dark_mode() -> bool:
 	cfg = load_config()
 	val = cfg.get('dark_mode')
@@ -109,7 +124,8 @@ class KeyTaggerApp:
 		self.records: List[MediaRecord] = []
 		self.card_frames: List[ttk.Frame] = []
 		self._cols: int = 1
-		self._thumb_px: int = THUMB_SIZE
+		self._thumb_px: int = max(120, int(get_thumb_size()))
+		self._thumb_apply_after_id: Optional[str] = None
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -149,6 +165,14 @@ class KeyTaggerApp:
 		chk_all.pack(anchor='w', pady=(4, 8))
 		btn_apply_filter = ttk.Button(side, text='Apply Filter', command=self.apply_filters, style='Small.TButton')
 		btn_apply_filter.pack(anchor='w')
+
+		# Thumbnail size slider
+		sz_label = ttk.Label(side, text='Thumbnail size', style='Muted.TLabel')
+		sz_label.pack(anchor='w', pady=(10, 2))
+		self.thumb_size_var = tk.IntVar(value=int(self._thumb_px))
+		sz = ttk.Scale(side, from_=120, to=512, orient='horizontal', variable=self.thumb_size_var, command=self._on_thumb_size_change)
+		sz.set(self._thumb_px)
+		sz.pack(fill='x')
 
 		# Hotkey settings
 		settings_btn = ttk.Button(side, text='Settings', command=self.open_settings)
@@ -346,7 +370,7 @@ class KeyTaggerApp:
 		# Approximate per-card width: thumbnail + frame padding + grid padding
 		pad = 6 * 2  # left/right grid padding aggregate
 		frame_pad = 8 * 2  # left/right internal padding
-		card_w = THUMB_SIZE + pad + frame_pad
+		card_w = int(self._thumb_px) + pad + frame_pad
 		return max(1, available_width // max(1, card_w))
 
 	def _layout_cards(self) -> None:
@@ -413,6 +437,32 @@ class KeyTaggerApp:
 	def apply_filters(self) -> None:
 		self.refresh_records()
 
+	def _on_thumb_size_change(self, value: object) -> None:
+		try:
+			val = int(float(value))
+		except Exception:
+			return
+		val = int(max(120, min(512, val)))
+		# Update UI slider variable to not get stuck
+		try:
+			self.thumb_size_var.set(val)
+		except Exception:
+			pass
+		self._thumb_px = val
+		# Debounce heavy re-render so dragging feels smooth
+		if getattr(self, '_thumb_apply_after_id', None):
+			try:
+				self.root.after_cancel(self._thumb_apply_after_id)
+			except Exception:
+				pass
+		self._thumb_apply_after_id = self.root.after(250, self._apply_thumb_size_change)
+
+	def _apply_thumb_size_change(self) -> None:
+		set_thumb_size(self._thumb_px)
+		self._cols = self._compute_columns(self.canvas.winfo_width() or int(self._thumb_px) * 2)
+		self.refresh_records()
+		self._thumb_apply_after_id = None
+
 	def _render_grid(self) -> None:
 		cols = max(1, self._cols)
 		pad = 6
@@ -439,18 +489,37 @@ class KeyTaggerApp:
 			btn = ttk.Button(frame, text='■', width=2, command=lambda rid=rec.id: self.toggle_select(rid), style='Small.TButton')
 			btn.grid(row=0, column=0, sticky='nw')
 
-			thumb_path = rec.thumbnail_path if rec.thumbnail_path and os.path.exists(rec.thumbnail_path) else None
-			if not thumb_path and rec.file_path and os.path.exists(rec.file_path):
+			# Always prefer a square thumbnail sized to THUMB_SIZE with black bars
+			thumb_path = None
+			# Try from original file first (images); build_square_thumbnail is idempotent and cached by path
+			if rec.file_path and os.path.exists(rec.file_path):
 				thumb_path = build_square_thumbnail(rec.file_path)
-				if thumb_path:
-					self.db.update_thumbnail_path(rec.file_path, thumb_path)
+			# If that failed (e.g., videos), try from an existing thumbnail image
+			if not thumb_path and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+				thumb_path = build_square_thumbnail(rec.thumbnail_path)
+			# Persist square path back to DB if we generated one and it's different
+			try:
+				if thumb_path and (rec.thumbnail_path != thumb_path):
+					self.db.update_thumbnail_path(rec.file_path or rec.thumbnail_path or '', thumb_path)
+			except Exception:
+				pass
 
 			img_label = ttk.Label(frame)
 			img_label.grid(row=1, column=0, padx=0, pady=0)
 			if thumb_path and os.path.exists(thumb_path):
 				try:
 					pil_im = Image.open(thumb_path)
-					photo = ImageTk.PhotoImage(pil_im)
+					# Resize to current thumb size with black bars if needed
+					w, h = pil_im.size
+					size = int(self._thumb_px)
+					scale = min(size / max(w, 1), size / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = pil_im.resize((new_w, new_h), Image.LANCZOS)
+					canvas = Image.new('RGB', (size, size), color=(0, 0, 0))
+					offset = ((size - new_w) // 2, (size - new_h) // 2)
+					canvas.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas)
 					self.photo_cache[rec.id] = photo
 					img_label.configure(image=photo)
 					# Keep a direct reference on the widget to avoid garbage collection
