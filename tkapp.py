@@ -241,7 +241,7 @@ class KeyTaggerApp:
 				'accent_active': '#10b981',
 				'card_bg': '#1f2937',
 				'card_hover_bg': '#273244',
-				'selected_bg': '#0b253c',
+				'selected_bg': '#1d4ed8',
 				'tag_bg': '#1e293b',
 				'tag_fg': '#93c5fd',
 				'canvas_bg': '#0f172a',
@@ -260,7 +260,7 @@ class KeyTaggerApp:
 				'accent_active': '#059669',
 				'card_bg': '#ffffff',
 				'card_hover_bg': '#f3f4f6',
-				'selected_bg': '#e7f0ff',
+				'selected_bg': '#2563eb',
 				'tag_bg': '#eef2ff',
 				'tag_fg': '#3730a3',
 				'canvas_bg': '#f6f7fb',
@@ -291,6 +291,9 @@ class KeyTaggerApp:
 		style.configure('HK.TCheckbutton', background=self.palette['side_bg'], foreground=self.palette['text'])
 		style.configure('HKHint.TLabel', background=self.palette['side_bg'], foreground=self.palette['key_hint'])
 
+		# Create rounded-corner button skins using 9-patch images
+		self._install_rounded_button_theme(style)
+
 		# Dark mode button overrides
 		if self.dark_mode:
 			style.configure('TButton', background='#374151', foreground='#ffffff')
@@ -319,6 +322,41 @@ class KeyTaggerApp:
 				self.canvas.configure(background=self.palette['canvas_bg'])
 		except Exception:
 			pass
+
+	def _install_rounded_button_theme(self, style: ttk.Style) -> None:
+		# ttk does not support corner radius directly; use element create with images.
+		# We'll synthesize simple rounded PNGs at runtime and register them.
+		try:
+			from PIL import ImageDraw
+		except Exception:
+			return
+		def make_round_rect(w: int, h: int, r: int, color: tuple[int, int, int]) -> Image.Image:
+			img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+			d = ImageDraw.Draw(img)
+			d.rounded_rectangle([0, 0, w - 1, h - 1], radius=r, fill=color)
+			return img
+		def tk_image_from_color(color_hex: str) -> tk.PhotoImage:
+			c = color_hex.lstrip('#')
+			r = int(c[0:2], 16); g = int(c[2:4], 16); b = int(c[4:6], 16)
+			img = make_round_rect(20, 20, 6, (r, g, b, 255))
+			return ImageTk.PhotoImage(img)
+		# Base skins
+		primary_img = tk_image_from_color(self.palette['primary'])
+		primary_active_img = tk_image_from_color(self.palette['primary_active'])
+		accent_img = tk_image_from_color(self.palette['accent'])
+		accent_active_img = tk_image_from_color(self.palette['accent_active'])
+		gray_img = tk_image_from_color('#374151' if self.dark_mode else '#e5e7eb')
+		gray_active_img = tk_image_from_color('#4b5563' if self.dark_mode else '#d1d5db')
+		# Register element using image (stretches well enough for flat buttons)
+		style.element_create('RoundedButton', 'image', primary_img, ('active', primary_active_img), border=10, sticky='nswe')
+		style.layout('Rounded.TButton', [('RoundedButton', {'sticky': 'nswe'}), ('Button.focus', {'children': [('Button.padding', {'children': [('Button.label', {'sticky': 'nswe'})], 'sticky': 'nswe'})], 'sticky': 'nswe'})])
+		style.configure('Rounded.TButton', background='')
+		# Map our existing button variants to rounded base
+		style.layout('Primary.TButton', style.layout('Rounded.TButton'))
+		style.layout('Accent.TButton', style.layout('Rounded.TButton'))
+		style.layout('TButton', style.layout('Rounded.TButton'))
+		style.element_create('RoundedGray', 'image', gray_img, ('active', gray_active_img), border=10, sticky='nswe')
+		style.layout('Small.TButton', [('RoundedGray', {'sticky': 'nswe'}), ('Button.padding', {'children': [('Button.label', {'sticky': 'nswe'})], 'sticky': 'nswe'})])
 
 	def _bind_mousewheel(self, widget: tk.Widget) -> None:
 		widget.bind('<Enter>', lambda e: self._activate_mousewheel())
@@ -549,7 +587,12 @@ class KeyTaggerApp:
 		selected = media_id in self.selected_ids
 		style = ttk.Style()
 		style_name = f'Card{media_id}.TFrame'
-		style.configure(style_name, background=(self.palette.get('selected_bg', '#e7f0ff') if selected else self.palette.get('card_bg', '#ffffff')))
+		if selected:
+			bg = self.palette.get('selected_bg', '#1d4ed8')
+			style.configure(style_name, background=bg, relief='solid', borderwidth=2)
+		else:
+			bg = self.palette.get('card_bg', '#ffffff')
+			style.configure(style_name, background=bg, relief='flat', borderwidth=0)
 		frame.configure(style=style_name)
 
 	def open_settings(self) -> None:
