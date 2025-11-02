@@ -14,7 +14,11 @@ SUPPORTED_IMAGE_EXTENSIONS = {
 }
 
 SUPPORTED_VIDEO_EXTENSIONS = {
-    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".3gp"
+}
+
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".m4a", ".mp3"
 }
 
 
@@ -33,6 +37,11 @@ def is_image_file(path: str) -> bool:
 def is_video_file(path: str) -> bool:
     _, ext = os.path.splitext(path)
     return ext.lower() in SUPPORTED_VIDEO_EXTENSIONS
+
+
+def is_audio_file(path: str) -> bool:
+    _, ext = os.path.splitext(path)
+    return ext.lower() in SUPPORTED_AUDIO_EXTENSIONS
 
 
 def sha256_of_file(path: str, chunk_size: int = 1024 * 1024) -> str:
@@ -113,7 +122,11 @@ def list_media_files(root_dir: str) -> List[str]:
         for fname in fnames:
             fpath = os.path.join(current_root, fname)
             ext = os.path.splitext(fpath)[1].lower()
-            if (ext in SUPPORTED_IMAGE_EXTENSIONS) or (ext in SUPPORTED_VIDEO_EXTENSIONS):
+            if (
+                (ext in SUPPORTED_IMAGE_EXTENSIONS)
+                or (ext in SUPPORTED_VIDEO_EXTENSIONS)
+                or (ext in SUPPORTED_AUDIO_EXTENSIONS)
+            ):
                 files.append(fpath)
     return files
 
@@ -172,10 +185,13 @@ def scan_directory(
                                     save_thumbnail(img, thumb_path)
                             except Exception:
                                 thumb_path = None
-                        else:
+                        elif ext in SUPPORTED_VIDEO_EXTENSIONS:
                             dims = create_video_thumbnail(fpath, thumb_path)
                             if dims is None:
                                 thumb_path = None
+                        else:
+                            # Audio: no thumbnail generation
+                            thumb_path = None
                     # If we created a new thumbnail, persist it
                     if thumb_path and thumb_path != thumb_path_existing:
                         try:
@@ -194,7 +210,14 @@ def scan_directory(
             p_hash_hex: Optional[str] = None
             captured_time = None
             thumb_path = thumbnail_path_for(sha256, thumbnails_dir)
-            media_type = "image" if ext in SUPPORTED_IMAGE_EXTENSIONS else "video"
+            if ext in SUPPORTED_IMAGE_EXTENSIONS:
+                media_type = "image"
+            elif ext in SUPPORTED_VIDEO_EXTENSIONS:
+                media_type = "video"
+            elif ext in SUPPORTED_AUDIO_EXTENSIONS:
+                media_type = "audio"
+            else:
+                media_type = "unknown"
 
             if ext in SUPPORTED_IMAGE_EXTENSIONS:
                 with Image.open(fpath) as img:
@@ -210,13 +233,16 @@ def scan_directory(
                             save_thumbnail(img, thumb_path)
                         except Exception:
                             thumb_path = None
-            else:
+            elif ext in SUPPORTED_VIDEO_EXTENSIONS:
                 if not os.path.exists(thumb_path):
                     dims = create_video_thumbnail(fpath, thumb_path)
                     if dims is None:
                         thumb_path = None
                     else:
                         width, height = dims
+            else:
+                # Audio: do not attempt thumbnail; metadata remains minimal
+                thumb_path = None
 
             media_id = db.upsert_media(
                 file_path=fpath,
@@ -247,7 +273,9 @@ def scan_directory(
                     size_bytes=None,
                     captured_time_utc=None,
                     modified_time_utc=None,
-                    media_type="video" if is_video_file(fpath) else "image",
+                    media_type=(
+                        "video" if is_video_file(fpath) else ("audio" if is_audio_file(fpath) else "image")
+                    ),
                     thumbnail_path=None,
                     error=str(e),
                 )
