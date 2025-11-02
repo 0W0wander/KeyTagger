@@ -171,6 +171,7 @@ class KeyTaggerApp:
 		self.current_view_id: Optional[int] = None
 		self.viewer_photo: Optional[ImageTk.PhotoImage] = None
 		self.force_cols: Optional[int] = None
+		self.gallery_height: Optional[int] = None
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -474,6 +475,18 @@ class KeyTaggerApp:
 					self._layout_cards()
 			else:
 				self._layout_cards()
+		# Adjust gallery target height based on window size in viewing mode
+		if self.view_mode:
+			try:
+				new_h = max(100, int(self.root.winfo_height() * 0.28))
+				if new_h != (self.gallery_height or 0):
+					self.gallery_height = new_h
+					self.canvas.configure(height=new_h)
+					# Thumbs need to be resized to match new height
+					self._render_grid()
+					self._scroll_selected_into_view()
+			except Exception:
+				pass
 		# Update viewer render on resize in viewing mode
 		if self.view_mode:
 			self._update_viewer_image()
@@ -500,10 +513,12 @@ class KeyTaggerApp:
 			frame.grid_configure(row=row, column=col, padx=pad, pady=pad, sticky='n')
 		self.grid_frame.update_idletasks()
 		self.canvas.configure(scrollregion=self.canvas.bbox('all'))
-		# If viewing mode active, constrain gallery height to about one thumbnail
+		# If viewing mode active, set gallery height so thumbnails fit
 		try:
 			if self.view_mode:
-				self.canvas.configure(height=int(self._thumb_px) + 32)
+				if not isinstance(self.gallery_height, int):
+					self.gallery_height = max(100, int(self.root.winfo_height() * 0.28))
+				self.canvas.configure(height=int(self.gallery_height))
 			else:
 				self.canvas.configure(height='')
 		except Exception:
@@ -597,6 +612,12 @@ class KeyTaggerApp:
 		self._thumb_apply_after_id = None
 
 	def _render_grid(self) -> None:
+		# Clear existing grid children to avoid layering old grid under viewing strip
+		try:
+			for w in self.grid_frame.winfo_children():
+				w.destroy()
+		except Exception:
+			pass
 		cols = max(1, self._cols)
 		pad = 6
 		self.card_frames = []
@@ -653,7 +674,11 @@ class KeyTaggerApp:
 					pil_im = Image.open(thumb_path)
 					# Resize to current thumb size with black bars if needed
 					w, h = pil_im.size
-					size = int(self._thumb_px)
+					# Choose target square size: adapt to viewing mode strip height
+					if self.view_mode and isinstance(self.gallery_height, int):
+						size = max(60, int(self.gallery_height) - 40)
+					else:
+						size = int(self._thumb_px)
 					scale = min(size / max(w, 1), size / max(h, 1))
 					new_w = max(1, int(w * scale))
 					new_h = max(1, int(h * scale))
@@ -717,9 +742,19 @@ class KeyTaggerApp:
 		# Re-render grid to ensure all thumbnails exist in horizontal strip
 		self._render_grid()
 		if self.view_mode:
-			if self.current_view_id is None and self.records:
-				self.current_view_id = self.records[0].id
+			# Keep current selection if available; otherwise select first
+			if self.current_view_id is None:
+				if self.selected_ids:
+					# Choose an existing selected id if present in records
+					try:
+						sid = next((r.id for r in self.records if r.id in self.selected_ids), None)
+						self.current_view_id = sid if sid is not None else (self.records[0].id if self.records else None)
+					except Exception:
+						self.current_view_id = self.records[0].id if self.records else None
+				else:
+					self.current_view_id = self.records[0].id if self.records else None
 			self._update_viewer_image()
+			self._scroll_selected_into_view()
 
 	def _apply_view_mode_layout(self) -> None:
 		self.force_cols = None
@@ -736,6 +771,9 @@ class KeyTaggerApp:
 				except Exception:
 					pass
 				self.grid_frame.update_idletasks()
+				# Set gallery strip height to a fraction of window so thumbnails fit
+				self.gallery_height = max(100, int(self.root.winfo_height() * 0.28))
+				self.canvas.configure(height=self.gallery_height)
 				self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 				self.canvas.xview_moveto(0)
 			else:
@@ -943,10 +981,13 @@ class KeyTaggerApp:
 			self.grid_frame.update_idletasks()
 			total_w = max(1, int(self.grid_frame.winfo_width()))
 			cw = max(1, int(self.canvas.winfo_width()))
-			x = int(frame.winfo_x())
-			# Center selected frame if possible
-			desired_left = max(0, x - (cw // 2))
-			frac = desired_left / max(1, total_w - cw)
+			# Center on frame center
+			frame_center = int(frame.winfo_x()) + int(frame.winfo_width() // 2)
+			desired_left = max(0, frame_center - (cw // 2))
+			if total_w <= cw:
+				frac = 0.0
+			else:
+				frac = desired_left / float(max(1, total_w - cw))
 			self.canvas.xview_moveto(min(max(frac, 0.0), 1.0))
 		except Exception:
 			pass
