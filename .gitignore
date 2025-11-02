@@ -19,6 +19,7 @@ keytag_config.json
 # PyInstaller
 build/
 dist/
+executable/
 *.spec
 
 # OS/IDE
