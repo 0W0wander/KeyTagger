@@ -687,6 +687,13 @@ class KeyTaggerApp:
 
 			self._update_card_style(frame, rec.id)
 
+		# Ensure scrollregion covers all thumbnails after (re)render
+		try:
+			self.grid_frame.update_idletasks()
+			self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+		except Exception:
+			pass
+
 	def _update_card_style(self, frame: ttk.Frame, media_id: int) -> None:
 		selected = media_id in self.selected_ids
 		style = ttk.Style()
@@ -707,7 +714,8 @@ class KeyTaggerApp:
 			pass
 		self._apply_view_mode_layout()
 		self._cols = self._compute_columns(self.canvas.winfo_width() or int(self._thumb_px) * 2)
-		self._layout_cards()
+		# Re-render grid to ensure all thumbnails exist in horizontal strip
+		self._render_grid()
 		if self.view_mode:
 			if self.current_view_id is None and self.records:
 				self.current_view_id = self.records[0].id
@@ -722,12 +730,25 @@ class KeyTaggerApp:
 				# Horizontal scrolling visible in viewing mode; hide vertical
 				self.scroll_x.grid()
 				self.scroll_y.grid_remove()
+				# Let inner window use natural width so canvas can scroll horizontally
+				try:
+					self.canvas.itemconfigure(self.grid_window, width=0)
+				except Exception:
+					pass
+				self.grid_frame.update_idletasks()
+				self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+				self.canvas.xview_moveto(0)
 			else:
 				self.viewer_container.grid_remove()
 				self.root.rowconfigure(1, weight=0)
 				# Normal mode uses vertical scroll
 				self.scroll_y.grid()
 				self.scroll_x.grid_remove()
+				# Stretch inner window to canvas width again
+				try:
+					self.canvas.itemconfigure(self.grid_window, width=self.canvas.winfo_width())
+				except Exception:
+					pass
 		except Exception:
 			pass
 
