@@ -3,6 +3,9 @@ import json
 import threading
 from typing import Dict, List, Optional, Set, Tuple
 import sys
+import time
+import subprocess
+import shutil
 
 from PIL import Image, ImageTk
 try:
@@ -172,6 +175,20 @@ class KeyTaggerApp:
 		self.viewer_photo: Optional[ImageTk.PhotoImage] = None
 		self.force_cols: Optional[int] = None
 		self.gallery_height: Optional[int] = None
+		# Media playback state
+		self._video_thread: Optional[threading.Thread] = None
+		self._video_stop_event: Optional[threading.Event] = None
+		self._video_path_playing: Optional[str] = None
+		self._audio_proc: Optional[subprocess.Popen] = None
+		self._video_pause: bool = False
+		self._video_total_frames: int = 0
+		self._video_fps: float = 0.0
+		self._video_duration_s: float = 0.0
+		self._video_current_frame: int = 0
+		self._video_seek_to_frame: Optional[int] = None
+		self._video_lock = threading.Lock()
+		self._video_pos_var = tk.DoubleVar(value=0.0)
+		self._video_updating_slider: bool = False
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -275,6 +292,17 @@ class KeyTaggerApp:
 		self.root.rowconfigure(1, weight=0)
 		self.viewer_label = ttk.Label(self.viewer_container)
 		self.viewer_label.grid(row=0, column=0, sticky='n', padx=8, pady=8)
+		# Video controls (hidden unless a video is selected)
+		self.video_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
+		self.video_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.video_controls.columnconfigure(1, weight=1)
+		self.video_play_btn = ttk.Button(self.video_controls, text='Pause', command=self._toggle_video_play, style='Small.TButton')
+		self.video_play_btn.grid(row=0, column=0, padx=(0, 8))
+		self.video_seek = ttk.Scale(self.video_controls, orient='horizontal', from_=0.0, to=1.0, variable=self._video_pos_var, command=self._on_video_seek)
+		self.video_seek.grid(row=0, column=1, sticky='ew')
+		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='Muted.TLabel')
+		self.video_time_lbl.grid(row=0, column=2, padx=(8, 0))
+		self.video_controls.grid_remove()
 		self.viewer_container.grid_remove()
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
@@ -489,7 +517,9 @@ class KeyTaggerApp:
 				pass
 		# Update viewer render on resize in viewing mode
 		if self.view_mode:
-			self._update_viewer_image()
+			# Avoid restarting video during resize to prevent flicker/crash; video loop adapts sizing itself
+			if not self._is_video_playing():
+				self._update_viewer_image()
 
 	def _compute_columns(self, available_width: int) -> int:
 		# Approximate per-card width: thumbnail + frame padding + grid padding
@@ -777,6 +807,8 @@ class KeyTaggerApp:
 				self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 				self.canvas.xview_moveto(0)
 			else:
+				# Leaving viewing mode: stop any playback
+				self._stop_media_playback()
 				self.viewer_container.grid_remove()
 				self.root.rowconfigure(1, weight=0)
 				# Normal mode uses vertical scroll
@@ -809,22 +841,69 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 			return
-		path: Optional[str] = None
+		# Always stop any previous playback before updating view
+		self._stop_media_playback()
 		mt = str(getattr(rec, 'media_type', '')).lower()
-		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
-			path = rec.file_path
-		elif mt == 'video' and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
-			path = rec.thumbnail_path
-		elif mt == 'audio':
-			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
-		elif rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
-			path = rec.thumbnail_path
-		if not path or not os.path.exists(path):
-			return
+		# Compute available render area for viewer
 		try:
 			self.viewer_container.update_idletasks()
 			avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
 			avail_h = max(200, int(self.root.winfo_height() * 0.55))
+		except Exception:
+			avail_w, avail_h = 800, 500
+		# Images: render full resolution scaled, not thumbnails
+		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			try:
+				with Image.open(rec.file_path) as im:
+					im = im.convert('RGB')
+					w, h = im.size
+					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = im.resize((new_w, new_h), Image.LANCZOS)
+					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+					canvas_img.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas_img)
+					self.viewer_photo = photo
+					self.viewer_label.configure(image=photo)
+					self.viewer_label.image = photo  # type: ignore[attr-defined]
+			except Exception:
+				pass
+			return
+		# Video: play the actual video in the bottom viewer if possible
+		if mt == 'video' and rec.file_path and os.path.exists(rec.file_path):
+			self._start_video_playback(rec.file_path)
+			return
+		# Audio: start playback and show a large placeholder image
+		if mt == 'audio' and rec.file_path and os.path.exists(rec.file_path):
+			self._start_audio_playback(rec.file_path)
+			# Render placeholder image sized to viewer
+			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+			if path and os.path.exists(path):
+				try:
+					with Image.open(path) as im:
+						im = im.convert('RGB')
+						w, h = im.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = im.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self.viewer_photo = photo
+						self.viewer_label.configure(image=photo)
+						self.viewer_label.image = photo  # type: ignore[attr-defined]
+				except Exception:
+					pass
+			return
+		# Fallback: show any available thumbnail
+		path = rec.thumbnail_path if getattr(rec, 'thumbnail_path', None) else None
+		if not path or not os.path.exists(path):
+			return
+		try:
 			with Image.open(path) as im:
 				im = im.convert('RGB')
 				w, h = im.size
@@ -841,6 +920,239 @@ class KeyTaggerApp:
 				self.viewer_label.image = photo  # type: ignore[attr-defined]
 		except Exception:
 			pass
+
+	def _stop_media_playback(self) -> None:
+		# Stop video thread if running
+		try:
+			if self._video_stop_event is not None:
+				self._video_stop_event.set()
+			if self._video_thread is not None and self._video_thread.is_alive():
+				self._video_thread.join(timeout=0.5)
+		finally:
+			self._video_thread = None
+			self._video_stop_event = None
+			self._video_path_playing = None
+			self._video_pause = False
+			self._video_total_frames = 0
+			self._video_fps = 0.0
+			self._video_duration_s = 0.0
+			self._video_current_frame = 0
+			self._video_seek_to_frame = None
+			# Hide controls
+			try:
+				self.video_controls.grid_remove()
+			except Exception:
+				pass
+		# Stop audio subprocess if running
+		try:
+			if self._audio_proc is not None:
+				self._audio_proc.terminate()
+				self._audio_proc = None
+		except Exception:
+			self._audio_proc = None
+
+	def _is_video_playing(self) -> bool:
+		try:
+			return bool(self._video_thread and self._video_thread.is_alive() and self._video_path_playing)
+		except Exception:
+			return False
+
+	def _start_video_playback(self, path: str) -> None:
+		# Attempt to play video frames in the label using OpenCV if available
+		try:
+			import cv2  # type: ignore
+		except Exception:
+			# Fallback to showing thumbnail if cv2 not available
+			thumb = getattr(self._find_record_by_id(self.current_view_id), 'thumbnail_path', None)
+			if thumb and os.path.exists(thumb):
+				try:
+					with Image.open(thumb) as im:
+						im = im.convert('RGB')
+						# Determine available space dynamically
+						self.viewer_container.update_idletasks()
+						avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+						avail_h = max(200, int(self.root.winfo_height() * 0.55))
+						w, h = im.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = im.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self.viewer_photo = photo
+						self.viewer_label.configure(image=photo)
+						self.viewer_label.image = photo  # type: ignore[attr-defined]
+				except Exception:
+					pass
+			return
+		self._video_stop_event = threading.Event()
+		stop_event = self._video_stop_event
+		self._video_path_playing = path
+		# Clear any image so we don't show stale frames
+		try:
+			self.viewer_label.configure(image='')
+			self.viewer_label.image = None  # type: ignore[attr-defined]
+		except Exception:
+			pass
+		# Initialize capture metadata and show controls
+		try:
+			cap_probe = cv2.VideoCapture(path)
+			if cap_probe.isOpened():
+				self._video_fps = float(cap_probe.get(cv2.CAP_PROP_FPS) or 30.0) or 30.0
+				self._video_total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+				self._video_duration_s = (self._video_total_frames / self._video_fps) if self._video_fps > 0 else 0.0
+				cap_probe.release()
+			else:
+				self._video_fps = 30.0
+				self._video_total_frames = 0
+				self._video_duration_s = 0.0
+		except Exception:
+			self._video_fps = 30.0
+			self._video_total_frames = 0
+			self._video_duration_s = 0.0
+		# Configure controls
+		try:
+			self.video_controls.grid()
+			self._video_pause = False
+			self.video_play_btn.configure(text='Pause')
+			self._video_updating_slider = True
+			self.video_seek.configure(from_=0.0, to=max(0.01, float(self._video_duration_s) or 0.01))
+			self._video_pos_var.set(0.0)
+			self._video_updating_slider = False
+			self.video_time_lbl.configure(text=f"00:00 / {self._format_time(self._video_duration_s)}")
+		except Exception:
+			pass
+		def run() -> None:
+			try:
+				cap = cv2.VideoCapture(path)
+				if not cap.isOpened():
+					return
+				fps = float(cap.get(cv2.CAP_PROP_FPS) or self._video_fps or 30.0)
+				if not fps or fps <= 0:
+					fps = 30.0
+				interval = 1.0 / float(max(1.0, fps))
+				while not stop_event.is_set():
+					# Apply pending seek
+					if self._video_seek_to_frame is not None:
+						with self._video_lock:
+							seek_frame = int(self._video_seek_to_frame)
+							self._video_seek_to_frame = None
+						cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, seek_frame))
+						self._video_current_frame = max(0, seek_frame)
+					# Handle pause
+					if self._video_pause:
+						time.sleep(0.05)
+						continue
+					ok, frame = cap.read()
+					if not ok:
+						break
+					# Convert BGR to RGB
+					frame_rgb = frame[:, :, ::-1]
+					img = Image.fromarray(frame_rgb)
+					# Determine available space dynamically and letterbox
+					try:
+						self.viewer_container.update_idletasks()
+						avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+						avail_h = max(200, int(self.root.winfo_height() * 0.55))
+					except Exception:
+						avail_w, avail_h = 800, 500
+					w, h = img.size
+					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = img.resize((new_w, new_h), Image.LANCZOS)
+					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+					canvas_img.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas_img)
+					# Schedule UI update in main thread
+					self.root.after(0, self._set_viewer_photo, photo)
+					# Update time/seek UI
+					try:
+						pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+						self._video_current_frame = pos_frames
+						pos_sec = float(pos_frames) / float(fps)
+						self.root.after(0, self._update_video_seek_ui, pos_sec)
+					except Exception:
+						pass
+					time.sleep(interval)
+				cap.release()
+			except Exception:
+				pass
+		self._video_thread = threading.Thread(target=run, daemon=True)
+		self._video_thread.start()
+
+	def _update_video_seek_ui(self, pos_sec: float) -> None:
+		try:
+			self._video_updating_slider = True
+			self._video_pos_var.set(max(0.0, float(pos_sec)))
+			self._video_updating_slider = False
+			total = self._video_duration_s
+			self.video_time_lbl.configure(text=f"{self._format_time(pos_sec)} / {self._format_time(total)}")
+		except Exception:
+			pass
+
+	def _toggle_video_play(self) -> None:
+		try:
+			self._video_pause = not self._video_pause
+			self.video_play_btn.configure(text=('Play' if self._video_pause else 'Pause'))
+		except Exception:
+			pass
+
+	def _on_video_seek(self, value: object) -> None:
+		# Ignore callback if we are updating slider programmatically
+		if self._video_updating_slider:
+			return
+		try:
+			sec = float(value) if value is not None else 0.0
+			fps = float(self._video_fps or 30.0)
+			frame = int(max(0, sec * fps))
+			with self._video_lock:
+				self._video_seek_to_frame = frame
+		except Exception:
+			pass
+
+	def _format_time(self, seconds: float) -> str:
+		try:
+			s = int(max(0, seconds))
+			m, s = divmod(s, 60)
+			h, m = divmod(m, 60)
+			if h > 0:
+				return f"{h:02d}:{m:02d}:{s:02d}"
+			return f"{m:02d}:{s:02d}"
+		except Exception:
+			return "00:00"
+
+	def _set_viewer_photo(self, photo: ImageTk.PhotoImage) -> None:
+		try:
+			self.viewer_photo = photo
+			self.viewer_label.configure(image=photo)
+			self.viewer_label.image = photo  # type: ignore[attr-defined]
+		except Exception:
+			pass
+
+	def _start_audio_playback(self, path: str) -> None:
+		# Prefer ffplay if available for broad codec support
+		try:
+			if shutil.which('ffplay'):
+				self._audio_proc = subprocess.Popen(['ffplay', '-nodisp', '-autoexit', '-loglevel', 'error', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+				return
+		except Exception:
+			self._audio_proc = None
+		# Try playsound as a very simple fallback if installed
+		try:
+			from playsound import playsound  # type: ignore
+		except Exception:
+			playsound = None  # type: ignore
+		if playsound is not None:
+			def _run() -> None:
+				try:
+					playsound(path)
+				except Exception:
+					pass
+			threading.Thread(target=_run, daemon=True).start()
 
 	def open_settings(self) -> None:
 		dialog = tk.Toplevel(self.root)
