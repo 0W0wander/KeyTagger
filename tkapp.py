@@ -196,6 +196,15 @@ class KeyTaggerApp:
 		self._video_paused_at_media_sec: float = 0.0
 		# Session token to avoid stale updates from previous media
 		self._viewer_session: int = 0
+		# Debounce id for gallery resize in viewing mode
+		self._gallery_resize_after_id: Optional[str] = None
+		# Track last canvas width to avoid redundant relayouts
+		self._last_canvas_width: Optional[int] = None
+		# Freeze gallery height in viewing mode to prevent thrash
+		self._freeze_gallery_height: bool = False
+		# Track what is currently rendered in the viewer to avoid redundant restarts
+		self._viewer_current_id: Optional[int] = None
+		self._viewer_current_type: Optional[str] = None
 		# Close handler
 		try:
 			self.root.protocol('WM_DELETE_WINDOW', self._on_close)
@@ -327,7 +336,7 @@ class KeyTaggerApp:
 		self.video_controls.grid_remove()
 		# Audio controls (no autoplay). Simple play/pause button
 		self.audio_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.audio_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.audio_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.audio_play_btn = ttk.Button(self.audio_controls, text='Play Audio', command=self._toggle_audio_play, style='Small.TButton')
 		self.audio_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.audio_controls.grid_remove()
@@ -519,28 +528,37 @@ class KeyTaggerApp:
 				self.canvas.itemconfigure(self.grid_window, width=event.width)
 		except Exception:
 			pass
-		# Recompute desired number of columns based on available width
-		new_cols = self._compute_columns(max(1, int(event.width)))
-		if new_cols != self._cols:
-			self._cols = new_cols
-			# If view mode, ensure frames cover all records; otherwise just reflow
-			if self.view_mode:
-				if len(self.card_frames) != len(self.records):
-					self._render_grid()
-				else:
-					self._layout_cards()
-			else:
-				self._layout_cards()
-		# Adjust gallery target height based on window size in viewing mode
-		if self.view_mode:
+		# Recompute desired number of columns based on available width, only if width meaningfully changed
+		try:
+			cw = int(event.width)
+			if self._last_canvas_width is None or abs(cw - int(self._last_canvas_width)) >= 4:
+				self._last_canvas_width = cw
+				new_cols = self._compute_columns(max(1, cw))
+				if new_cols != self._cols:
+					self._cols = new_cols
+					# If view mode, ensure frames cover all records; otherwise just reflow
+					if self.view_mode:
+						if len(self.card_frames) != len(self.records):
+							self._render_grid()
+						else:
+							self._layout_cards()
+					else:
+						self._layout_cards()
+		except Exception:
+			pass
+		# Adjust gallery target height based on window size in viewing mode (debounced)
+		if self.view_mode and not self._freeze_gallery_height:
 			try:
 				new_h = max(100, int(self.root.winfo_height() * 0.28))
 				if new_h != (self.gallery_height or 0):
 					self.gallery_height = new_h
-					self.canvas.configure(height=new_h)
-					# Thumbs need to be resized to match new height
-					self._render_grid()
-					self._scroll_selected_into_view()
+					# Debounce expensive re-render to avoid flicker
+					if getattr(self, '_gallery_resize_after_id', None):
+						try:
+							self.root.after_cancel(self._gallery_resize_after_id)
+						except Exception:
+							pass
+					self._gallery_resize_after_id = self.root.after(120, self._apply_gallery_resize)
 			except Exception:
 				pass
 		# Update viewer render on resize in viewing mode
@@ -548,6 +566,19 @@ class KeyTaggerApp:
 			# Avoid restarting active animations during resize to prevent flicker/crash; loops adapt sizing
 			if not (self._is_video_playing() or self._is_gif_playing()):
 				self._update_viewer_image()
+
+	def _apply_gallery_resize(self) -> None:
+		try:
+			self._gallery_resize_after_id = None
+			if not self.view_mode:
+				return
+			if isinstance(self.gallery_height, int):
+				self.canvas.configure(height=int(self.gallery_height))
+			# Thumbs need to be resized to match new height
+			self._render_grid()
+			self._scroll_selected_into_view()
+		except Exception:
+			pass
 
 	def _compute_columns(self, available_width: int) -> int:
 		# Approximate per-card width: thumbnail + frame padding + grid padding
@@ -832,6 +863,7 @@ class KeyTaggerApp:
 				# Set gallery strip height to a fraction of window so thumbnails fit
 				self.gallery_height = max(100, int(self.root.winfo_height() * 0.28))
 				self.canvas.configure(height=self.gallery_height)
+				self._freeze_gallery_height = True
 				self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 				self.canvas.xview_moveto(0)
 			else:
@@ -847,6 +879,7 @@ class KeyTaggerApp:
 					self.canvas.itemconfigure(self.grid_window, width=self.canvas.winfo_width())
 				except Exception:
 					pass
+				self._freeze_gallery_height = False
 		except Exception:
 			pass
 
@@ -874,10 +907,19 @@ class KeyTaggerApp:
 				self.viewer_label.image = None  # type: ignore[attr-defined]
 			except Exception:
 				pass
+			# Clear viewer state when nothing is selected
+			self._viewer_current_id = None
+			self._viewer_current_type = None
 			return
-		# Always stop any previous playback before updating view
-		self._stop_media_playback()
+		# Determine media type and whether it changed since last render
 		mt = str(getattr(rec, 'media_type', '')).lower()
+		cur_id = int(getattr(rec, 'id', -1))
+		changed = (self._viewer_current_id != cur_id) or (self._viewer_current_type != mt)
+		# Only stop/reconfigure playback when the selected media actually changes
+		if changed:
+			self._stop_media_playback()
+			self._viewer_current_id = cur_id
+			self._viewer_current_type = mt
 		# Compute available render area for viewer
 		try:
 			self.viewer_container.update_idletasks()
@@ -919,13 +961,16 @@ class KeyTaggerApp:
 			return
 		# Audio: do not autoplay; show placeholder and audio controls
 		if mt == 'audio' and rec.file_path and os.path.exists(rec.file_path):
-			# Show audio controls (no autoplay)
-			try:
-				self.audio_controls.grid()
-				self.audio_play_btn.configure(text='Play Audio')
-			except Exception:
-				pass
-			# Render placeholder image sized to viewer
+			# Show audio controls (only adjust visibility when media changed)
+			if changed:
+				try:
+					self.audio_controls.grid()
+					self.audio_play_btn.configure(text='Play Audio')
+					# Ensure video controls are hidden for audio files
+					self.video_controls.grid_remove()
+				except Exception:
+					pass
+			# Render placeholder image sized to viewer (safe to do on resize without restarting anything)
 			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
 			if path and os.path.exists(path):
 				try:
@@ -1201,6 +1246,11 @@ class KeyTaggerApp:
 			# Initialize clock for A/V sync
 			self._video_clock_offset = 0.0
 			self._video_clock_start = time.monotonic()
+			# Hide audio controls while video is active
+			try:
+				self.audio_controls.grid_remove()
+			except Exception:
+				pass
 		except Exception:
 			pass
 		def run() -> None:
