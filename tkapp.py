@@ -185,7 +185,7 @@ class KeyTaggerApp:
 
 		# Sidebar
 		side = ttk.Frame(self.root, padding=12, style='Side.TFrame')
-		side.grid(row=0, column=0, sticky='ns')
+		side.grid(row=0, column=0, sticky='ns', rowspan=2)
 
 		self.folder_var = tk.StringVar()
 		title = ttk.Label(side, text='KeyTagger', style='Title.TLabel')
@@ -466,7 +466,14 @@ class KeyTaggerApp:
 		new_cols = self._compute_columns(max(1, int(event.width)))
 		if new_cols != self._cols:
 			self._cols = new_cols
-			self._layout_cards()
+			# If view mode, ensure frames cover all records; otherwise just reflow
+			if self.view_mode:
+				if len(self.card_frames) != len(self.records):
+					self._render_grid()
+				else:
+					self._layout_cards()
+			else:
+				self._layout_cards()
 		# Update viewer render on resize in viewing mode
 		if self.view_mode:
 			self._update_viewer_image()
