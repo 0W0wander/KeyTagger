@@ -189,6 +189,9 @@ class KeyTaggerApp:
 		self._video_lock = threading.Lock()
 		self._video_pos_var = tk.DoubleVar(value=0.0)
 		self._video_updating_slider: bool = False
+		self._video_clock_start: float = 0.0
+		self._video_clock_offset: float = 0.0
+		self._video_paused_at_media_sec: float = 0.0
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -1022,6 +1025,9 @@ class KeyTaggerApp:
 			self._video_pos_var.set(0.0)
 			self._video_updating_slider = False
 			self.video_time_lbl.configure(text=f"00:00 / {self._format_time(self._video_duration_s)}")
+			# Initialize clock for A/V sync
+			self._video_clock_offset = 0.0
+			self._video_clock_start = time.monotonic()
 		except Exception:
 			pass
 		def run() -> None:
@@ -1033,6 +1039,11 @@ class KeyTaggerApp:
 				if not fps or fps <= 0:
 					fps = 30.0
 				interval = 1.0 / float(max(1.0, fps))
+				# Ensure audio starts at t=0 when playback begins
+				try:
+					self.root.after(0, self._restart_video_audio, 0.0)
+				except Exception:
+					pass
 				while not stop_event.is_set():
 					# Apply pending seek
 					if self._video_seek_to_frame is not None:
@@ -1045,6 +1056,17 @@ class KeyTaggerApp:
 					if self._video_pause:
 						time.sleep(0.05)
 						continue
+					# Real-time sync: compute target frame from clock
+					try:
+						elapsed = float(time.monotonic() - self._video_clock_start)
+						media_pos = float(self._video_clock_offset + max(0.0, elapsed))
+						desired_frame = int(media_pos * fps)
+						cur_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame)
+						if desired_frame > cur_frame + 1:
+							cap.set(cv2.CAP_PROP_POS_FRAMES, desired_frame)
+							self._video_current_frame = desired_frame
+					except Exception:
+						pass
 					ok, frame = cap.read()
 					if not ok:
 						break
@@ -1071,18 +1093,57 @@ class KeyTaggerApp:
 					self.root.after(0, self._set_viewer_photo, photo)
 					# Update time/seek UI
 					try:
-						pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+						pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame or 0)
 						self._video_current_frame = pos_frames
 						pos_sec = float(pos_frames) / float(fps)
 						self.root.after(0, self._update_video_seek_ui, pos_sec)
 					except Exception:
 						pass
-					time.sleep(interval)
+					# Sleep until the next frame time to throttle
+					try:
+						elapsed = float(time.monotonic() - self._video_clock_start)
+						media_pos = float(self._video_clock_offset + max(0.0, elapsed))
+						next_frame_time = float((self._video_current_frame + 1) / fps)
+						delay = max(0.0, next_frame_time - media_pos)
+						if delay > 0.02:
+							delay = 0.02
+						time.sleep(delay)
+					except Exception:
+						time.sleep(interval)
 				cap.release()
 			except Exception:
 				pass
 		self._video_thread = threading.Thread(target=run, daemon=True)
 		self._video_thread.start()
+
+	def _restart_video_audio(self, pos_sec: float) -> None:
+		# Start or restart ffplay at the given position to play video audio
+		try:
+			if not self._video_path_playing:
+				return
+			# Kill any existing audio proc first
+			if self._audio_proc is not None:
+				try:
+					self._audio_proc.terminate()
+				except Exception:
+					pass
+				self._audio_proc = None
+			if shutil.which('ffplay'):
+				# Use -ss to start near the requested time
+				cmd = ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'error', '-ss', f"{max(0.0, float(pos_sec)):.3f}", self._video_path_playing]
+				startupinfo = None
+				creationflags = 0
+				if sys.platform.startswith('win'):
+					try:
+						startupinfo = subprocess.STARTUPINFO()
+						startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+						creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+					except Exception:
+						startupinfo = None
+						creationflags = 0
+				self._audio_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo, creationflags=creationflags)
+		except Exception:
+			self._audio_proc = None
 
 	def _update_video_seek_ui(self, pos_sec: float) -> None:
 		try:
@@ -1098,6 +1159,23 @@ class KeyTaggerApp:
 		try:
 			self._video_pause = not self._video_pause
 			self.video_play_btn.configure(text=('Play' if self._video_pause else 'Pause'))
+			# Sync audio with pause/resume
+			if self._video_pause:
+				# Stop audio
+				try:
+					if self._audio_proc is not None:
+						self._audio_proc.terminate()
+						self._audio_proc = None
+				except Exception:
+					self._audio_proc = None
+			else:
+				# Resume audio near current position
+				fps = float(self._video_fps or 30.0)
+				pos_sec = float(max(0, int(self._video_current_frame)))/fps
+				# Reset clock so real-time sync resumes from current pos
+				self._video_clock_offset = float(pos_sec)
+				self._video_clock_start = time.monotonic()
+				self._restart_video_audio(pos_sec)
 		except Exception:
 			pass
 
@@ -1111,6 +1189,12 @@ class KeyTaggerApp:
 			frame = int(max(0, sec * fps))
 			with self._video_lock:
 				self._video_seek_to_frame = frame
+			# If playing, restart audio at new position
+			if not self._video_pause:
+				self._restart_video_audio(sec)
+			# Reset clock to the new seek position
+			self._video_clock_offset = float(sec)
+			self._video_clock_start = time.monotonic()
 		except Exception:
 			pass
 
@@ -1137,7 +1221,17 @@ class KeyTaggerApp:
 		# Prefer ffplay if available for broad codec support
 		try:
 			if shutil.which('ffplay'):
-				self._audio_proc = subprocess.Popen(['ffplay', '-nodisp', '-autoexit', '-loglevel', 'error', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+				startupinfo = None
+				creationflags = 0
+				if sys.platform.startswith('win'):
+					try:
+						startupinfo = subprocess.STARTUPINFO()
+						startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+						creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+					except Exception:
+						startupinfo = None
+						creationflags = 0
+				self._audio_proc = subprocess.Popen(['ffplay', '-nodisp', '-autoexit', '-loglevel', 'error', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo, creationflags=creationflags)
 				return
 		except Exception:
 			self._audio_proc = None
