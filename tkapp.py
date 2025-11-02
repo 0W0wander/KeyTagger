@@ -166,6 +166,11 @@ class KeyTaggerApp:
 		self._cols: int = 1
 		self._thumb_px: int = max(120, int(get_thumb_size()))
 		self._thumb_apply_after_id: Optional[str] = None
+		# Viewing mode state
+		self.view_mode: bool = False
+		self.current_view_id: Optional[int] = None
+		self.viewer_photo: Optional[ImageTk.PhotoImage] = None
+		self.force_cols: Optional[int] = None
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -240,27 +245,44 @@ class KeyTaggerApp:
 		self.hotkey_list_frame.pack(fill='x', pady=(6, 0))
 		self._render_hotkey_list()
 
-		# Main area with scrollable canvas
+		# Viewing mode toggle button
+		self.view_toggle_btn = ttk.Button(side, text='Enter Viewing Mode', command=self.toggle_view_mode, style='Small.TButton')
+		self.view_toggle_btn.pack(fill='x', pady=(8, 0))
+
+		# Main area with scrollable canvas (gallery)
 		main = ttk.Frame(self.root, style='App.TFrame')
 		main.grid(row=0, column=1, sticky='nsew')
 		main.rowconfigure(0, weight=1)
 		main.columnconfigure(0, weight=1)
 
 		self.canvas = tk.Canvas(main, highlightthickness=0, background=self.palette.get('canvas_bg', '#f6f7fb'))
-		scroll_y = ttk.Scrollbar(main, orient='vertical', command=self.canvas.yview)
+		self.scroll_y = ttk.Scrollbar(main, orient='vertical', command=self.canvas.yview)
+		self.scroll_x = ttk.Scrollbar(main, orient='horizontal', command=self.canvas.xview)
 		self.grid_frame = ttk.Frame(self.canvas, style='App.TFrame')
 		self.grid_frame.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
 		self.grid_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor='nw')
-		self.canvas.configure(yscrollcommand=scroll_y.set)
+		self.canvas.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
 		self.canvas.grid(row=0, column=0, sticky='nsew')
-		scroll_y.grid(row=0, column=1, sticky='ns')
+		self.scroll_y.grid(row=0, column=1, sticky='ns')
+		self.scroll_x.grid(row=1, column=0, sticky='ew')
+		self.scroll_x.grid_remove()
 		self.canvas.bind('<Configure>', self._on_canvas_configure)
+
+		# Bottom viewer area (hidden until viewing mode)
+		self.viewer_container = ttk.Frame(self.root, style='App.TFrame')
+		self.viewer_container.grid(row=1, column=1, sticky='nsew')
+		self.root.rowconfigure(1, weight=0)
+		self.viewer_label = ttk.Label(self.viewer_container)
+		self.viewer_label.grid(row=0, column=0, sticky='n', padx=8, pady=8)
+		self.viewer_container.grid_remove()
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
 		self._activate_mousewheel()
 
 		# Apply app background
 		self.root.configure(background=self.palette.get('root_bg', '#e9edf5'))
+		# Ensure layout reflects initial non-view mode
+		self._apply_view_mode_layout()
 
 	def _setup_theme(self) -> None:
 		style = ttk.Style()
@@ -435,7 +457,9 @@ class KeyTaggerApp:
 	def _on_canvas_configure(self, event: tk.Event) -> None:
 		# Keep inner frame width equal to the canvas width
 		try:
-			self.canvas.itemconfigure(self.grid_window, width=event.width)
+			# In normal mode, stretch inner frame to canvas width; in viewing mode, allow natural width for horizontal scrolling
+			if not self.view_mode:
+				self.canvas.itemconfigure(self.grid_window, width=event.width)
 		except Exception:
 			pass
 		# Recompute desired number of columns based on available width
@@ -443,27 +467,46 @@ class KeyTaggerApp:
 		if new_cols != self._cols:
 			self._cols = new_cols
 			self._layout_cards()
+		# Update viewer render on resize in viewing mode
+		if self.view_mode:
+			self._update_viewer_image()
 
 	def _compute_columns(self, available_width: int) -> int:
 		# Approximate per-card width: thumbnail + frame padding + grid padding
 		pad = 6 * 2  # left/right grid padding aggregate
 		frame_pad = 8 * 2  # left/right internal padding
 		card_w = int(self._thumb_px) + pad + frame_pad
+		if self.view_mode and isinstance(self.force_cols, int) and self.force_cols > 0:
+			return int(self.force_cols)
 		return max(1, available_width // max(1, card_w))
 
 	def _layout_cards(self) -> None:
 		cols = max(1, self._cols)
 		pad = 6
 		for idx, frame in enumerate(self.card_frames):
-			row = idx // cols
-			col = idx % cols
+			if self.view_mode:
+				row = 0
+				col = idx
+			else:
+				row = idx // cols
+				col = idx % cols
 			frame.grid_configure(row=row, column=col, padx=pad, pady=pad, sticky='n')
 		self.grid_frame.update_idletasks()
 		self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+		# If viewing mode active, constrain gallery height to about one thumbnail
+		try:
+			if self.view_mode:
+				self.canvas.configure(height=int(self._thumb_px) + 32)
+			else:
+				self.canvas.configure(height='')
+		except Exception:
+			pass
 
 	def _bind_hotkeys(self) -> None:
 		self.root.bind('<Key>', self.on_key)
 		self.root.bind('<Control-KeyPress>', self.on_ctrl_key)
+		self.root.bind('<Left>', self.on_arrow_left)
+		self.root.bind('<Right>', self.on_arrow_right)
 
 	def pick_folder(self) -> None:
 		path = filedialog.askdirectory(initialdir=self.folder_var.get() or os.path.abspath('.'))
@@ -511,6 +554,11 @@ class KeyTaggerApp:
 			w.destroy()
 		self.photo_cache.clear()
 		self._render_grid()
+		# Initialize viewer in viewing mode
+		if self.view_mode:
+			if self.current_view_id is None and self.records:
+				self.current_view_id = self.records[0].id
+			self._update_viewer_image()
 
 	def apply_filters(self) -> None:
 		self.refresh_records()
@@ -546,8 +594,12 @@ class KeyTaggerApp:
 		pad = 6
 		self.card_frames = []
 		for idx, rec in enumerate(self.records):
-			row = idx // cols
-			col = idx % cols
+			if self.view_mode:
+				row = 0
+				col = idx
+			else:
+				row = idx // cols
+				col = idx % cols
 			frame = ttk.Frame(self.grid_frame, padding=8, style='Card.TFrame')
 			frame.grid(row=row, column=col, padx=pad, pady=pad, sticky='n')
 			frame.bind('<Button-1>', lambda e, rid=rec.id: self.toggle_select(rid))
@@ -639,6 +691,90 @@ class KeyTaggerApp:
 			bg = self.palette.get('card_bg', '#ffffff')
 			style.configure(style_name, background=bg, relief='flat', borderwidth=0)
 		frame.configure(style=style_name)
+
+	def toggle_view_mode(self) -> None:
+		self.view_mode = not self.view_mode
+		try:
+			self.view_toggle_btn.configure(text=('Exit Viewing Mode' if self.view_mode else 'Enter Viewing Mode'))
+		except Exception:
+			pass
+		self._apply_view_mode_layout()
+		self._cols = self._compute_columns(self.canvas.winfo_width() or int(self._thumb_px) * 2)
+		self._layout_cards()
+		if self.view_mode:
+			if self.current_view_id is None and self.records:
+				self.current_view_id = self.records[0].id
+			self._update_viewer_image()
+
+	def _apply_view_mode_layout(self) -> None:
+		self.force_cols = None
+		try:
+			if self.view_mode:
+				self.viewer_container.grid()
+				self.root.rowconfigure(1, weight=1)
+				# Horizontal scrolling visible in viewing mode; hide vertical
+				self.scroll_x.grid()
+				self.scroll_y.grid_remove()
+			else:
+				self.viewer_container.grid_remove()
+				self.root.rowconfigure(1, weight=0)
+				# Normal mode uses vertical scroll
+				self.scroll_y.grid()
+				self.scroll_x.grid_remove()
+		except Exception:
+			pass
+
+	def _find_record_by_id(self, mid: Optional[int]) -> Optional[MediaRecord]:
+		if mid is None:
+			return None
+		for r in self.records:
+			if int(r.id) == int(mid):
+				return r
+		return None
+
+	def _update_viewer_image(self) -> None:
+		if not self.view_mode:
+			return
+		rec = self._find_record_by_id(self.current_view_id)
+		if not rec:
+			try:
+				self.viewer_label.configure(image='')
+				self.viewer_label.image = None  # type: ignore[attr-defined]
+			except Exception:
+				pass
+			return
+		path: Optional[str] = None
+		mt = str(getattr(rec, 'media_type', '')).lower()
+		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			path = rec.file_path
+		elif mt == 'video' and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+			path = rec.thumbnail_path
+		elif mt == 'audio':
+			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+		elif rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+			path = rec.thumbnail_path
+		if not path or not os.path.exists(path):
+			return
+		try:
+			self.viewer_container.update_idletasks()
+			avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+			avail_h = max(200, int(self.root.winfo_height() * 0.55))
+			with Image.open(path) as im:
+				im = im.convert('RGB')
+				w, h = im.size
+				scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+				new_w = max(1, int(w * scale))
+				new_h = max(1, int(h * scale))
+				resized = im.resize((new_w, new_h), Image.LANCZOS)
+				canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+				offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+				canvas_img.paste(resized, offset)
+				photo = ImageTk.PhotoImage(canvas_img)
+				self.viewer_photo = photo
+				self.viewer_label.configure(image=photo)
+				self.viewer_label.image = photo  # type: ignore[attr-defined]
+		except Exception:
+			pass
 
 	def open_settings(self) -> None:
 		dialog = tk.Toplevel(self.root)
@@ -759,6 +895,52 @@ class KeyTaggerApp:
 			# Instead, simply rebuild subtle style by checking labels under frame
 			pass
 		self._refresh_card_styles()
+		# Update viewer when selection changes in viewing mode
+		if self.view_mode:
+			self.current_view_id = int(media_id)
+			self._update_viewer_image()
+			self._scroll_selected_into_view()
+
+	def _scroll_selected_into_view(self) -> None:
+		try:
+			if not self.view_mode or not self.card_frames:
+				return
+			# Find index of current_view_id
+			idx = 0
+			for i, rec in enumerate(self.records):
+				if int(rec.id) == int(self.current_view_id or -1):
+					idx = i
+					break
+			frame = self.card_frames[idx]
+			self.grid_frame.update_idletasks()
+			total_w = max(1, int(self.grid_frame.winfo_width()))
+			cw = max(1, int(self.canvas.winfo_width()))
+			x = int(frame.winfo_x())
+			# Center selected frame if possible
+			desired_left = max(0, x - (cw // 2))
+			frac = desired_left / max(1, total_w - cw)
+			self.canvas.xview_moveto(min(max(frac, 0.0), 1.0))
+		except Exception:
+			pass
+
+	def _navigate(self, delta: int) -> None:
+		if not self.records:
+			return
+		# Determine current index; if none, start at 0
+		try:
+			cur_idx = 0
+			for i, rec in enumerate(self.records):
+				if int(rec.id) == int(self.current_view_id or -1):
+					cur_idx = i
+					break
+			next_idx = (cur_idx + delta) % len(self.records)
+			self.current_view_id = self.records[next_idx].id
+			self.selected_ids = {int(self.current_view_id)}
+			self._refresh_card_styles()
+			self._update_viewer_image()
+			self._scroll_selected_into_view()
+		except Exception:
+			pass
 
 	def _refresh_card_styles(self) -> None:
 		# Recolor using cached frame order matching records
@@ -771,10 +953,22 @@ class KeyTaggerApp:
 		if not k:
 			return
 		self.last_key_var.set(f'Last key: {k}')
+		# In viewing mode, A/D navigate
+		if self.view_mode and k in ['a', 'd']:
+			self._navigate(-1 if k == 'a' else 1)
+			return
 		tag = self.hotkeys.get(k)
 		if not tag:
 			return
 		self.apply_tag_to_selection(tag)
+
+	def on_arrow_left(self, event: tk.Event) -> None:
+		if self.view_mode:
+			self._navigate(-1)
+
+	def on_arrow_right(self, event: tk.Event) -> None:
+		if self.view_mode:
+			self._navigate(1)
 
 	def on_ctrl_key(self, event: tk.Event) -> None:
 		k = (event.keysym or '').lower()
