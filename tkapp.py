@@ -5,6 +5,11 @@ from typing import Dict, List, Optional, Set, Tuple
 import sys
 
 from PIL import Image, ImageTk
+try:
+    from PIL import ImageDraw, ImageFont
+except Exception:
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
@@ -106,6 +111,41 @@ def build_square_thumbnail(src_path: str, size: int = THUMB_SIZE) -> Optional[st
 			canvas.paste(resized, offset)
 			canvas.save(dest, format='JPEG', quality=85)
 			return dest
+	except Exception:
+		return None
+
+
+def build_audio_placeholder(size: int = THUMB_SIZE) -> Optional[str]:
+	"""Create or return a cached grey square placeholder with centered 'audio' text."""
+	try:
+		os.makedirs(THUMBS_DIR, exist_ok=True)
+		dest = os.path.join(THUMBS_DIR, f"audio_placeholder_v3_{int(size)}.jpg")
+		if os.path.exists(dest):
+			return dest
+		# Dark background for strong contrast; readable in light/dark themes
+		bg = (31, 41, 55)
+		fg = (229, 231, 235)
+		img = Image.new('RGB', (int(size), int(size)), color=bg)
+		if ImageDraw is not None:
+			draw = ImageDraw.Draw(img)
+			text = 'audio'
+			# Try to pick a reasonable font size relative to square size
+			try:
+				# Use a default bitmap font when truetype not available
+				font_size = max(16, int(size * 0.2))
+				font = ImageFont.load_default() if ImageFont is not None else None
+				# Measure text bounding box for centering
+				bbox = draw.textbbox((0, 0), text, font=font)
+				tw = (bbox[2] - bbox[0]) if bbox else 0
+				th = (bbox[3] - bbox[1]) if bbox else 0
+				x = (size - tw) // 2
+				y = (size - th) // 2
+				draw.text((x, y), text, fill=fg, font=font)
+			except Exception:
+				# Fallback: simple text without font metrics
+				draw.text((size // 3, size // 3), text, fill=fg)
+		img.save(dest, format='JPEG', quality=85)
+		return dest
 	except Exception:
 		return None
 
@@ -537,13 +577,18 @@ class KeyTaggerApp:
 				thumb_path = build_square_thumbnail(rec.thumbnail_path)
 			# Persist square path back to DB if we generated one and it's different
 			try:
-				if thumb_path and (rec.thumbnail_path != thumb_path):
+				if thumb_path and (rec.thumbnail_path != thumb_path) and str(rec.media_type).lower() != 'audio':
 					self.db.update_thumbnail_path(rec.file_path or rec.thumbnail_path or '', thumb_path)
 			except Exception:
 				pass
 
 			img_label = ttk.Label(frame)
 			img_label.grid(row=1, column=0, padx=0, pady=0)
+			# Fallbacks: show original image if available; audio uses placeholder
+			if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
+				thumb_path = rec.file_path
+			elif (not thumb_path) and str(rec.media_type).lower() == 'audio':
+				thumb_path = build_audio_placeholder(size=int(self._thumb_px))
 			if thumb_path and os.path.exists(thumb_path):
 				try:
 					pil_im = Image.open(thumb_path)

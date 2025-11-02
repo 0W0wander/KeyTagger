@@ -6,6 +6,11 @@ try:
 except Exception:
 	key_press_events = None  # component optional; we guard usage
 from PIL import Image
+try:
+	from PIL import ImageDraw, ImageFont
+except Exception:
+	ImageDraw = None  # type: ignore
+	ImageFont = None  # type: ignore
 
 from keytagger.db import Database
 from keytagger.scanner import scan_directory, list_media_files
@@ -214,6 +219,36 @@ def build_square_thumbnail(src_path: str, size: int = THUMB_SIZE) -> str | None:
 	"""Create a square, letterboxed thumbnail file and return its path."""
 	if not src_path or not os.path.exists(src_path):
 		return None
+
+
+@st.cache_data(show_spinner=False)
+def build_audio_placeholder(size: int = THUMB_SIZE) -> str | None:
+	"""Create or return a cached grey square with centered 'audio' text."""
+	try:
+		os.makedirs(SQUARE_THUMBS_DIR, exist_ok=True)
+		dest = os.path.join(SQUARE_THUMBS_DIR, f"audio_placeholder_v3_{int(size)}.jpg")
+		if os.path.exists(dest):
+			return dest
+		bg = (31, 41, 55)
+		fg = (229, 231, 235)
+		img = Image.new("RGB", (int(size), int(size)), color=bg)
+		if ImageDraw is not None:
+			draw = ImageDraw.Draw(img)
+			text = "audio"
+			try:
+				font = ImageFont.load_default() if ImageFont is not None else None
+				bbox = draw.textbbox((0, 0), text, font=font)
+				tw = (bbox[2] - bbox[0]) if bbox else 0
+				th = (bbox[3] - bbox[1]) if bbox else 0
+				x = (size - tw) // 2
+				y = (size - th) // 2
+				draw.text((x, y), text, fill=fg, font=font)
+			except Exception:
+				draw.text((size // 3, size // 3), text, fill=fg)
+		img.save(dest, format="JPEG", quality=85)
+		return dest
+	except Exception:
+		return None
 	os.makedirs(SQUARE_THUMBS_DIR, exist_ok=True)
 	# Derive a deterministic filename based on original name
 	base = os.path.splitext(os.path.basename(src_path))[0]
@@ -327,7 +362,16 @@ for start in range(0, len(records), cols_per_row):
 					unsafe_allow_html=True,
 				)
 				# Use square thumbnail to ensure uniform size
-				sq = build_square_thumbnail(rec.thumbnail_path) if rec.thumbnail_path else None
+				sq = None
+				if str(getattr(rec, 'media_type', '')).lower() == 'audio':
+					sq = build_audio_placeholder(THUMB_SIZE)
+				else:
+					# Try from original file path first (works for images)
+					if rec.file_path and os.path.exists(rec.file_path):
+						sq = build_square_thumbnail(rec.file_path)
+					# Fallback: try from an existing thumbnail image (images/videos)
+					if (not sq) and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+						sq = build_square_thumbnail(rec.thumbnail_path) or rec.thumbnail_path
 				if sq and os.path.exists(sq):
 					st.markdown(f"<div id='thumbwrap_{rec.id}'>", unsafe_allow_html=True)
 					st.image(sq, use_column_width=True)
