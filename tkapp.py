@@ -6,6 +6,8 @@ import sys
 import time
 import subprocess
 import shutil
+import signal
+import atexit
 
 from PIL import Image, ImageTk
 try:
@@ -192,6 +194,23 @@ class KeyTaggerApp:
 		self._video_clock_start: float = 0.0
 		self._video_clock_offset: float = 0.0
 		self._video_paused_at_media_sec: float = 0.0
+		# Session token to avoid stale updates from previous media
+		self._viewer_session: int = 0
+		# Close handler
+		try:
+			self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+		except Exception:
+			pass
+		# Ensure audio is stopped if the process exits unexpectedly
+		try:
+			atexit.register(lambda: self._terminate_audio_proc())
+		except Exception:
+			pass
+		# GIF playback state
+		self._gif_thread: Optional[threading.Thread] = None
+		self._gif_stop_event: Optional[threading.Event] = None
+		self._gif_path_playing: Optional[str] = None
+		self._gif_pause: bool = False
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -306,6 +325,12 @@ class KeyTaggerApp:
 		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='Muted.TLabel')
 		self.video_time_lbl.grid(row=0, column=2, padx=(8, 0))
 		self.video_controls.grid_remove()
+		# Audio controls (no autoplay). Simple play/pause button
+		self.audio_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
+		self.audio_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.audio_play_btn = ttk.Button(self.audio_controls, text='Play Audio', command=self._toggle_audio_play, style='Small.TButton')
+		self.audio_play_btn.grid(row=0, column=0, padx=(0, 8))
+		self.audio_controls.grid_remove()
 		self.viewer_container.grid_remove()
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
@@ -520,8 +545,8 @@ class KeyTaggerApp:
 				pass
 		# Update viewer render on resize in viewing mode
 		if self.view_mode:
-			# Avoid restarting video during resize to prevent flicker/crash; video loop adapts sizing itself
-			if not self._is_video_playing():
+			# Avoid restarting active animations during resize to prevent flicker/crash; loops adapt sizing
+			if not (self._is_video_playing() or self._is_gif_playing()):
 				self._update_viewer_image()
 
 	def _compute_columns(self, available_width: int) -> int:
@@ -836,6 +861,12 @@ class KeyTaggerApp:
 	def _update_viewer_image(self) -> None:
 		if not self.view_mode:
 			return
+		# Increment session to invalidate stale async updates from previous media
+		try:
+			self._viewer_session += 1
+		except Exception:
+			self._viewer_session = int(self._viewer_session) + 1 if isinstance(self._viewer_session, int) else 1
+		current_session = int(self._viewer_session)
 		rec = self._find_record_by_id(self.current_view_id)
 		if not rec:
 			try:
@@ -856,6 +887,14 @@ class KeyTaggerApp:
 			avail_w, avail_h = 800, 500
 		# Images: render full resolution scaled, not thumbnails
 		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			# Animated GIF support: play animation instead of static render
+			try:
+				_, ext = os.path.splitext(rec.file_path)
+				if ext.lower() == '.gif':
+					self._start_gif_playback(rec.file_path, current_session)
+					return
+			except Exception:
+				pass
 			try:
 				with Image.open(rec.file_path) as im:
 					im = im.convert('RGB')
@@ -876,11 +915,16 @@ class KeyTaggerApp:
 			return
 		# Video: play the actual video in the bottom viewer if possible
 		if mt == 'video' and rec.file_path and os.path.exists(rec.file_path):
-			self._start_video_playback(rec.file_path)
+			self._start_video_playback(rec.file_path, current_session)
 			return
-		# Audio: start playback and show a large placeholder image
+		# Audio: do not autoplay; show placeholder and audio controls
 		if mt == 'audio' and rec.file_path and os.path.exists(rec.file_path):
-			self._start_audio_playback(rec.file_path)
+			# Show audio controls (no autoplay)
+			try:
+				self.audio_controls.grid()
+				self.audio_play_btn.configure(text='Play Audio')
+			except Exception:
+				pass
 			# Render placeholder image sized to viewer
 			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
 			if path and os.path.exists(path):
@@ -946,13 +990,53 @@ class KeyTaggerApp:
 				self.video_controls.grid_remove()
 			except Exception:
 				pass
+			try:
+				self.audio_controls.grid_remove()
+			except Exception:
+				pass
+		# Stop GIF thread if running
+		try:
+			if self._gif_stop_event is not None:
+				self._gif_stop_event.set()
+			if self._gif_thread is not None and self._gif_thread.is_alive():
+				self._gif_thread.join(timeout=0.5)
+		finally:
+			self._gif_thread = None
+			self._gif_stop_event = None
+			self._gif_path_playing = None
+			self._gif_pause = False
 		# Stop audio subprocess if running
+		self._terminate_audio_proc()
+
+	def _terminate_audio_proc(self) -> None:
 		try:
 			if self._audio_proc is not None:
-				self._audio_proc.terminate()
-				self._audio_proc = None
+				try:
+					self._audio_proc.terminate()
+					# Give it a moment to exit, then force kill if still alive
+					for _ in range(10):
+						if self._audio_proc.poll() is not None:
+							break
+						time.sleep(0.02)
+					if self._audio_proc.poll() is None:
+						self._audio_proc.kill()
+				except Exception:
+					pass
+				finally:
+					self._audio_proc = None
 		except Exception:
 			self._audio_proc = None
+
+	def _on_close(self) -> None:
+		# Ensure background playback is fully stopped when window closes
+		try:
+			self._stop_media_playback()
+		except Exception:
+			pass
+		try:
+			self.root.destroy()
+		except Exception:
+			pass
 
 	def _is_video_playing(self) -> bool:
 		try:
@@ -960,7 +1044,100 @@ class KeyTaggerApp:
 		except Exception:
 			return False
 
-	def _start_video_playback(self, path: str) -> None:
+	def _is_gif_playing(self) -> bool:
+		try:
+			return bool(self._gif_thread and self._gif_thread.is_alive() and self._gif_path_playing)
+		except Exception:
+			return False
+
+	def _start_gif_playback(self, path: str, session: int) -> None:
+		# Play animated GIF frames in a loop using PIL
+		try:
+			with Image.open(path) as test_im:
+				is_anim = bool(getattr(test_im, 'is_animated', False))
+				n_frames = int(getattr(test_im, 'n_frames', 1) or 1)
+				if (not is_anim) or n_frames <= 1:
+					# Not animated: render static
+					try:
+						self.viewer_container.update_idletasks()
+						avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+						avail_h = max(200, int(self.root.winfo_height() * 0.55))
+						with Image.open(path) as im:
+							im = im.convert('RGB')
+							w, h = im.size
+							scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+							new_w = max(1, int(w * scale))
+							new_h = max(1, int(h * scale))
+							resized = im.resize((new_w, new_h), Image.LANCZOS)
+							canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+							offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+							canvas_img.paste(resized, offset)
+							photo = ImageTk.PhotoImage(canvas_img)
+							self.viewer_photo = photo
+							self.viewer_label.configure(image=photo)
+							self.viewer_label.image = photo  # type: ignore[attr-defined]
+					except Exception:
+						pass
+					return
+		except Exception:
+			return
+		# If we reach here, we have an animated GIF; start thread
+		self._gif_stop_event = threading.Event()
+		stop_event = self._gif_stop_event
+		self._gif_path_playing = path
+		self._gif_pause = False
+		# Clear stale image
+		try:
+			self.viewer_label.configure(image='')
+			self.viewer_label.image = None  # type: ignore[attr-defined]
+		except Exception:
+			pass
+		def run() -> None:
+			try:
+				im = Image.open(path)
+				while not stop_event.is_set():
+					for frame_index in range(int(getattr(im, 'n_frames', 1) or 1)):
+						if stop_event.is_set():
+							break
+						try:
+							im.seek(frame_index)
+							frame = im.convert('RGBA')
+							# Determine available space dynamically
+							try:
+								self.viewer_container.update_idletasks()
+								avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+								avail_h = max(200, int(self.root.winfo_height() * 0.55))
+							except Exception:
+								avail_w, avail_h = 800, 500
+							w, h = frame.size
+							scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+							new_w = max(1, int(w * scale))
+							new_h = max(1, int(h * scale))
+							resized = frame.resize((new_w, new_h), Image.LANCZOS)
+							canvas_img = Image.new('RGBA', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0, 255))
+							offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+							canvas_img.paste(resized, offset, resized)
+							photo = ImageTk.PhotoImage(canvas_img)
+							self.root.after(0, self._set_viewer_photo_if_current, photo, session)
+							# Frame delay
+							delay_ms = int(im.info.get('duration', 100) or 100)
+							# Pause loop
+							end_time = time.time() + max(0.001, delay_ms / 1000.0)
+							while time.time() < end_time:
+								if stop_event.is_set():
+									break
+								if self._gif_pause:
+									time.sleep(0.02)
+									continue
+								time.sleep(0.005)
+						except Exception:
+							break
+				im.close()
+			except Exception:
+				pass
+		self._gif_thread = threading.Thread(target=run, daemon=True)
+		self._gif_thread.start()
+	def _start_video_playback(self, path: str, session: int) -> None:
 		# Attempt to play video frames in the label using OpenCV if available
 		try:
 			import cv2  # type: ignore
@@ -994,11 +1171,7 @@ class KeyTaggerApp:
 		stop_event = self._video_stop_event
 		self._video_path_playing = path
 		# Clear any image so we don't show stale frames
-		try:
-			self.viewer_label.configure(image='')
-			self.viewer_label.image = None  # type: ignore[attr-defined]
-		except Exception:
-			pass
+		# Do not clear image immediately to avoid flicker before first frame
 		# Initialize capture metadata and show controls
 		try:
 			cap_probe = cv2.VideoCapture(path)
@@ -1039,9 +1212,9 @@ class KeyTaggerApp:
 				if not fps or fps <= 0:
 					fps = 30.0
 				interval = 1.0 / float(max(1.0, fps))
-				# Ensure audio starts at t=0 when playback begins
+				# Ensure audio starts at t=0 when playback begins (only if still current)
 				try:
-					self.root.after(0, self._restart_video_audio, 0.0)
+					self.root.after(0, self._restart_video_audio, 0.0, session)
 				except Exception:
 					pass
 				while not stop_event.is_set():
@@ -1089,14 +1262,14 @@ class KeyTaggerApp:
 					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
 					canvas_img.paste(resized, offset)
 					photo = ImageTk.PhotoImage(canvas_img)
-					# Schedule UI update in main thread
-					self.root.after(0, self._set_viewer_photo, photo)
+					# Schedule UI update in main thread, guarded by session
+					self.root.after(0, self._set_viewer_photo_if_current, photo, session)
 					# Update time/seek UI
 					try:
 						pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame or 0)
 						self._video_current_frame = pos_frames
 						pos_sec = float(pos_frames) / float(fps)
-						self.root.after(0, self._update_video_seek_ui, pos_sec)
+						self.root.after(0, self._update_video_seek_ui_if_current, pos_sec, session)
 					except Exception:
 						pass
 					# Sleep until the next frame time to throttle
@@ -1116,18 +1289,16 @@ class KeyTaggerApp:
 		self._video_thread = threading.Thread(target=run, daemon=True)
 		self._video_thread.start()
 
-	def _restart_video_audio(self, pos_sec: float) -> None:
+	def _restart_video_audio(self, pos_sec: float, session: Optional[int] = None) -> None:
 		# Start or restart ffplay at the given position to play video audio
 		try:
+			# Ignore if this callback is stale
+			if session is not None and int(session) != int(self._viewer_session):
+				return
 			if not self._video_path_playing:
 				return
 			# Kill any existing audio proc first
-			if self._audio_proc is not None:
-				try:
-					self._audio_proc.terminate()
-				except Exception:
-					pass
-				self._audio_proc = None
+			self._terminate_audio_proc()
 			if shutil.which('ffplay'):
 				# Use -ss to start near the requested time
 				cmd = ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'error', '-ss', f"{max(0.0, float(pos_sec)):.3f}", self._video_path_playing]
@@ -1137,7 +1308,7 @@ class KeyTaggerApp:
 					try:
 						startupinfo = subprocess.STARTUPINFO()
 						startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-						creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+						creationflags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
 					except Exception:
 						startupinfo = None
 						creationflags = 0
@@ -1147,6 +1318,18 @@ class KeyTaggerApp:
 
 	def _update_video_seek_ui(self, pos_sec: float) -> None:
 		try:
+			self._video_updating_slider = True
+			self._video_pos_var.set(max(0.0, float(pos_sec)))
+			self._video_updating_slider = False
+			total = self._video_duration_s
+			self.video_time_lbl.configure(text=f"{self._format_time(pos_sec)} / {self._format_time(total)}")
+		except Exception:
+			pass
+
+	def _update_video_seek_ui_if_current(self, pos_sec: float, session: int) -> None:
+		try:
+			if int(session) != int(self._viewer_session):
+				return
 			self._video_updating_slider = True
 			self._video_pos_var.set(max(0.0, float(pos_sec)))
 			self._video_updating_slider = False
@@ -1175,7 +1358,7 @@ class KeyTaggerApp:
 				# Reset clock so real-time sync resumes from current pos
 				self._video_clock_offset = float(pos_sec)
 				self._video_clock_start = time.monotonic()
-				self._restart_video_audio(pos_sec)
+				self._restart_video_audio(pos_sec, int(self._viewer_session))
 		except Exception:
 			pass
 
@@ -1191,7 +1374,7 @@ class KeyTaggerApp:
 				self._video_seek_to_frame = frame
 			# If playing, restart audio at new position
 			if not self._video_pause:
-				self._restart_video_audio(sec)
+				self._restart_video_audio(sec, int(self._viewer_session))
 			# Reset clock to the new seek position
 			self._video_clock_offset = float(sec)
 			self._video_clock_start = time.monotonic()
@@ -1217,6 +1400,16 @@ class KeyTaggerApp:
 		except Exception:
 			pass
 
+	def _set_viewer_photo_if_current(self, photo: ImageTk.PhotoImage, session: int) -> None:
+		try:
+			if int(session) != int(self._viewer_session):
+				return
+			self.viewer_photo = photo
+			self.viewer_label.configure(image=photo)
+			self.viewer_label.image = photo  # type: ignore[attr-defined]
+		except Exception:
+			pass
+
 	def _start_audio_playback(self, path: str) -> None:
 		# Prefer ffplay if available for broad codec support
 		try:
@@ -1227,7 +1420,7 @@ class KeyTaggerApp:
 					try:
 						startupinfo = subprocess.STARTUPINFO()
 						startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-						creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+						creationflags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
 					except Exception:
 						startupinfo = None
 						creationflags = 0
@@ -1247,6 +1440,27 @@ class KeyTaggerApp:
 				except Exception:
 					pass
 			threading.Thread(target=_run, daemon=True).start()
+
+	def _toggle_audio_play(self) -> None:
+		try:
+			# If an audio process is running, stop it
+			if self._audio_proc is not None and (self._audio_proc.poll() is None):
+				self._terminate_audio_proc()
+				try:
+					self.audio_play_btn.configure(text='Play Audio')
+				except Exception:
+					pass
+				return
+			# Otherwise, start playback for the currently selected audio file
+			rec = self._find_record_by_id(self.current_view_id)
+			if rec and str(getattr(rec, 'media_type', '')).lower() == 'audio' and rec.file_path and os.path.exists(rec.file_path):
+				self._start_audio_playback(rec.file_path)
+				try:
+					self.audio_play_btn.configure(text='Pause Audio')
+				except Exception:
+					pass
+		except Exception:
+			pass
 
 	def open_settings(self) -> None:
 		dialog = tk.Toplevel(self.root)
