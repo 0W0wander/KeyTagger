@@ -56,6 +56,20 @@ def save_hotkeys(hotkeys: Dict[str, str]) -> None:
 	save_config(cfg)
 
 
+def get_tagging_nav_keys() -> Tuple[str, str]:
+	cfg = load_config()
+	prev_k = str(cfg.get('tagging_prev_key') or 'a').lower()
+	next_k = str(cfg.get('tagging_next_key') or 'd').lower()
+	return prev_k, next_k
+
+
+def set_tagging_nav_keys(prev_key: str, next_key: str) -> None:
+	cfg = load_config()
+	cfg['tagging_prev_key'] = (prev_key or '').strip().lower() or 'a'
+	cfg['tagging_next_key'] = (next_key or '').strip().lower() or 'd'
+	save_config(cfg)
+
+
 def get_thumb_size() -> int:
 	cfg = load_config()
 	val = cfg.get('thumb_size')
@@ -178,6 +192,12 @@ class KeyTaggerApp:
 		self.viewer_photo: Optional[ImageTk.PhotoImage] = None
 		self.force_cols: Optional[int] = None
 		self.gallery_height: Optional[int] = None
+		# Tagging mode state
+		self.tagging_mode: bool = False
+		self.tag_prev_key, self.tag_next_key = get_tagging_nav_keys()
+		self.tag_prev_key_var = tk.StringVar(value=self.tag_prev_key)
+		self.tag_next_key_var = tk.StringVar(value=self.tag_next_key)
+		self.tag_input_var = tk.StringVar()
 		# Media playback state
 		self._video_thread: Optional[threading.Thread] = None
 		self._video_stop_event: Optional[threading.Event] = None
@@ -300,6 +320,26 @@ class KeyTaggerApp:
 		# Viewing mode toggle button
 		self.view_toggle_btn = ttk.Button(side, text='Enter Viewing Mode', command=self.toggle_view_mode, style='Small.TButton')
 		self.view_toggle_btn.pack(fill='x', pady=(8, 0))
+		# Tagging mode toggle button
+		self.tagging_toggle_btn = ttk.Button(side, text='Enter Tagging Mode', command=self.toggle_tagging_mode, style='Small.TButton')
+		self.tagging_toggle_btn.pack(fill='x', pady=(6, 0))
+		# Tagging navigation hotkeys (visible only in tagging mode)
+		self.tagging_nav_frame = ttk.Frame(side, style='Side.TFrame')
+		row_nav1 = ttk.Frame(self.tagging_nav_frame, style='Side.TFrame')
+		row_nav1.pack(fill='x', pady=(8, 2))
+		lbl_prev = ttk.Label(row_nav1, text='Tagging: Prev key', style='Muted.TLabel')
+		lbl_prev.pack(side='left')
+		entry_prev = ttk.Entry(row_nav1, textvariable=self.tag_prev_key_var, width=8)
+		entry_prev.pack(side='right')
+		row_nav2 = ttk.Frame(self.tagging_nav_frame, style='Side.TFrame')
+		row_nav2.pack(fill='x', pady=(0, 8))
+		lbl_next = ttk.Label(row_nav2, text='Tagging: Next key', style='Muted.TLabel')
+		lbl_next.pack(side='left')
+		entry_next = ttk.Entry(row_nav2, textvariable=self.tag_next_key_var, width=8)
+		entry_next.pack(side='right')
+		btn_apply_nav = ttk.Button(self.tagging_nav_frame, text='Apply Tagging Keys', style='Small.TButton', command=self._apply_tagging_keys)
+		btn_apply_nav.pack(fill='x')
+		self.tagging_nav_frame.pack_forget()
 
 		# Main area with scrollable canvas (gallery)
 		main = ttk.Frame(self.root, style='App.TFrame')
@@ -325,7 +365,7 @@ class KeyTaggerApp:
 		self.viewer_container.grid(row=1, column=1, sticky='nsew')
 		self.root.rowconfigure(1, weight=0)
 		self.viewer_label = ttk.Label(self.viewer_container)
-		self.viewer_label.grid(row=0, column=0, sticky='n', padx=8, pady=8)
+		self.viewer_label.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
 		# Video controls (hidden unless a video is selected)
 		self.video_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
 		self.video_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
@@ -343,6 +383,25 @@ class KeyTaggerApp:
 		self.audio_play_btn = ttk.Button(self.audio_controls, text='Play Audio', command=self._toggle_audio_play, style='Small.TButton')
 		self.audio_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.audio_controls.grid_remove()
+		# Tagging input row (only visible in tagging mode)
+		# Tag list row (visible in tagging mode)
+		self.tagging_tags_frame = ttk.Frame(self.viewer_container, style='App.TFrame')
+		self.tagging_tags_frame.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 6))
+		self.tagging_tags_frame.grid_remove()
+		# Tagging input row (only visible in tagging mode)
+		self.tagging_input_frame = ttk.Frame(self.viewer_container, style='App.TFrame')
+		self.tagging_input_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(0, 12))
+		self.tagging_input_frame.columnconfigure(1, weight=1)
+		lbl_tag = ttk.Label(self.tagging_input_frame, text='Add tag:', style='TLabel')
+		lbl_tag.grid(row=0, column=0, padx=(0, 8))
+		self.tagging_entry = ttk.Entry(self.tagging_input_frame, textvariable=self.tag_input_var)
+		self.tagging_entry.grid(row=0, column=1, sticky='ew')
+		self.tagging_entry.bind('<Return>', self._on_tagging_enter)
+		# Intercept navigation hotkeys while the entry has focus so they don't insert characters
+		self.tagging_entry.bind('<Key>', self._on_tagging_entry_key)
+		self.tagging_entry.bind('<Left>', lambda e: self._on_tagging_entry_nav('left'))
+		self.tagging_entry.bind('<Right>', lambda e: self._on_tagging_entry_nav('right'))
+		self.tagging_input_frame.grid_remove()
 		self.viewer_container.grid_remove()
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
@@ -682,11 +741,15 @@ class KeyTaggerApp:
 			w.destroy()
 		self.photo_cache.clear()
 		self._render_grid()
-		# Initialize viewer in viewing mode
-		if self.view_mode:
+		# Initialize viewer in viewing/tagging mode
+		if self.view_mode or self.tagging_mode:
 			if self.current_view_id is None and self.records:
 				self.current_view_id = self.records[0].id
-			self._update_viewer_image()
+			if self.view_mode:
+				self._update_viewer_image()
+			if self.tagging_mode:
+				self._update_tagging_image()
+				self._render_tagging_tags()
 
 	def apply_filters(self) -> None:
 		self.refresh_records()
@@ -896,6 +959,266 @@ class KeyTaggerApp:
 				except Exception:
 					pass
 				self._freeze_gallery_height = False
+		except Exception:
+			pass
+
+	def toggle_tagging_mode(self) -> None:
+		# Disable viewing mode if active
+		if self.view_mode:
+			self.view_mode = False
+			try:
+				self.view_toggle_btn.configure(text='Enter Viewing Mode')
+			except Exception:
+				pass
+			self._apply_view_mode_layout()
+		self.tagging_mode = not self.tagging_mode
+		try:
+			self.tagging_toggle_btn.configure(text=('Exit Tagging Mode' if self.tagging_mode else 'Enter Tagging Mode'))
+		except Exception:
+			pass
+		self._apply_tagging_mode_layout()
+		if self.tagging_mode:
+			# Initialize current item if needed: prefer an image, then any with thumbnail, else first
+			if self.current_view_id is None and self.records:
+				chosen = None
+				try:
+					for r in self.records:
+						if str(getattr(r, 'media_type', '')).lower() == 'image':
+							chosen = r.id
+							break
+					if chosen is None:
+						for r in self.records:
+							if getattr(r, 'thumbnail_path', None):
+								chosen = r.id
+								break
+					if chosen is None:
+						chosen = self.records[0].id
+				except Exception:
+					chosen = self.records[0].id
+				self.current_view_id = chosen
+			# Ensure the selection matches the current
+			if self.current_view_id is not None:
+				try:
+					self.selected_ids = {int(self.current_view_id)}
+				except Exception:
+					self.selected_ids = {self.current_view_id}
+			self._update_tagging_image()
+			self._render_tagging_tags()
+			# Put keyboard focus into the tag input so typing works immediately
+			try:
+				self.tagging_entry.focus_set()
+			except Exception:
+				pass
+
+	def _apply_tagging_mode_layout(self) -> None:
+		try:
+			if self.tagging_mode:
+				# Hide grid canvas and scrollbars
+				self.canvas.grid_remove()
+				self.scroll_x.grid_remove()
+				self.scroll_y.grid_remove()
+				# Place viewer in bottom row and give it all space
+				self.viewer_container.grid(row=1, column=1, sticky='nsew')
+				self.root.rowconfigure(0, weight=0)
+				self.root.rowconfigure(1, weight=1)
+				# Ensure viewer row expands while controls/tag input stay visible
+				try:
+					self.viewer_container.rowconfigure(0, weight=1)
+					self.viewer_container.rowconfigure(1, weight=0)
+					self.viewer_container.rowconfigure(2, weight=0)
+					self.viewer_container.rowconfigure(3, weight=0)
+				except Exception:
+					pass
+				# Show tagging input
+				self.tagging_tags_frame.grid()
+				self.tagging_input_frame.grid()
+				# Show tagging nav config in sidebar
+				self.tagging_nav_frame.pack(fill='x', pady=(6, 0))
+				# Hide media controls in tagging mode to preserve space
+				try:
+					self.video_controls.grid_remove()
+					self.audio_controls.grid_remove()
+				except Exception:
+					pass
+			else:
+				# Restore grid canvas
+				self.canvas.grid(row=0, column=0, sticky='nsew')
+				self.scroll_y.grid(row=0, column=1, sticky='ns')
+				# Horizontal scroll hidden by default
+				self.scroll_x.grid_remove()
+				# Hide viewer unless viewing mode will show it
+				if not self.view_mode:
+					self.viewer_container.grid_remove()
+				# Hide tagging UI
+				self.tagging_tags_frame.grid_remove()
+				self.tagging_input_frame.grid_remove()
+				self.tagging_nav_frame.pack_forget()
+				# Reset row weights and canvas height for normal gallery mode
+				try:
+					self.root.rowconfigure(0, weight=1)
+					self.root.rowconfigure(1, weight=0)
+					self.canvas.itemconfigure(self.grid_window, width=self.canvas.winfo_width())
+					self.canvas.configure(height='')
+				except Exception:
+					pass
+		except Exception:
+			pass
+
+	def _update_tagging_image(self) -> None:
+		if not self.tagging_mode:
+			return
+		# Render current record similarly to viewer mode but scaled to occupy most of the window
+		rec = self._find_record_by_id(self.current_view_id)
+		if not rec:
+			try:
+				self.viewer_label.configure(image='')
+				self.viewer_label.image = None  # type: ignore[attr-defined]
+			except Exception:
+				pass
+			return
+		try:
+			self.viewer_container.update_idletasks()
+			# Compute available space inside the viewer container so we fit in the current window size
+			vc_w = int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 1280)
+			vc_h = int(self.viewer_container.winfo_height() or 600)
+			# Width available is container width minus padding
+			avail_w = max(200, vc_w - 16)
+			# Subtract the tag list + input heights (actual if available, else requested) and padding
+			try:
+				reserved_tags = int(self.tagging_tags_frame.winfo_height() or self.tagging_tags_frame.winfo_reqheight() or 0)
+			except Exception:
+				reserved_tags = 0
+			try:
+				reserved_input = int(self.tagging_input_frame.winfo_height() or self.tagging_input_frame.winfo_reqheight() or 0)
+			except Exception:
+				reserved_input = 80
+			reserved_h = reserved_tags + reserved_input + 24
+			avail_h = max(200, vc_h - reserved_h)
+		except Exception:
+			avail_w, avail_h = 1000, 700
+		try:
+			mt = str(getattr(rec, 'media_type', '')).lower()
+			if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+				with Image.open(rec.file_path) as im:
+					im = im.convert('RGB')
+					w, h = im.size
+					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = im.resize((new_w, new_h), Image.LANCZOS)
+					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+					canvas_img.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas_img)
+					self._set_viewer_photo(photo)
+					self._render_tagging_tags()
+					return
+			# Audio: show placeholder scaled
+			if mt == 'audio':
+				path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+				if path and os.path.exists(path):
+					with Image.open(path) as im:
+						im = im.convert('RGB')
+						w, h = im.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = im.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self._set_viewer_photo(photo)
+						self._render_tagging_tags()
+						return
+			# Video: prefer thumbnail; if missing, fall back to audio-style placeholder
+			if mt == 'video':
+				path = getattr(rec, 'thumbnail_path', None)
+				if path and os.path.exists(path):
+					with Image.open(path) as im:
+						im = im.convert('RGB')
+						w, h = im.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = im.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self._set_viewer_photo(photo)
+						self._render_tagging_tags()
+						return
+				# No thumbnail available: reuse audio placeholder as a generic badge
+				ph = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+				if ph and os.path.exists(ph):
+					with Image.open(ph) as im:
+						im = im.convert('RGB')
+						w, h = im.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = im.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self._set_viewer_photo(photo)
+						return
+			# Fallback to thumbnail
+			path = rec.thumbnail_path if getattr(rec, 'thumbnail_path', None) else None
+			if path and os.path.exists(path):
+				with Image.open(path) as im:
+					im = im.convert('RGB')
+					w, h = im.size
+					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = im.resize((new_w, new_h), Image.LANCZOS)
+					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+					canvas_img.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas_img)
+					self._set_viewer_photo(photo)
+					self._render_tagging_tags()
+					return
+		except Exception:
+			pass
+
+	def _on_tagging_enter(self, event: tk.Event) -> None:
+		text = (self.tag_input_var.get() or '').strip().lower()
+		if not text:
+			return
+		if self.current_view_id is None:
+			self.tag_input_var.set('')
+			return
+		try:
+			self.db.add_media_tags(int(self.current_view_id), [text])
+		except Exception:
+			try:
+				self.db.add_media_tags(self.current_view_id, [text])
+			except Exception:
+				pass
+		self.tag_input_var.set('')
+		self.refresh_records(preserve_selection=True)
+		self._show_toast(f"Added '{text}'")
+		# Update visible tag list and keep focus for rapid entry
+		try:
+			self._render_tagging_tags()
+			self.tagging_entry.focus_set()
+		except Exception:
+			pass
+
+	def _apply_tagging_keys(self) -> None:
+		prev_k = (self.tag_prev_key_var.get() or '').strip().lower() or 'a'
+		next_k = (self.tag_next_key_var.get() or '').strip().lower() or 'd'
+		self.tag_prev_key = prev_k
+		self.tag_next_key = next_k
+		set_tagging_nav_keys(prev_k, next_k)
+		# Reflect in UI label for last key and keep focus in entry
+		try:
+			self.last_key_var.set(f'Tagging keys: {self.tag_prev_key}/{self.tag_next_key}')
+			self.tagging_entry.focus_set()
 		except Exception:
 			pass
 
@@ -1585,6 +1908,59 @@ class KeyTaggerApp:
 			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda key=k: self._remove_hotkey_mapping(key))
 			btn.pack(side='right')
 
+	def _render_tagging_tags(self) -> None:
+		# Render chips for current item's tags in tagging mode
+		if not hasattr(self, 'tagging_tags_frame'):
+			return
+		for w in self.tagging_tags_frame.winfo_children():
+			w.destroy()
+		if not self.tagging_mode:
+			return
+		rec = self._find_record_by_id(self.current_view_id)
+		if not rec:
+			return
+		try:
+			tags = self.db.get_media_tags(int(rec.id))
+		except Exception:
+			tags = []
+		if not tags:
+			lbl = ttk.Label(self.tagging_tags_frame, text='No tags yet', style='Muted.TLabel')
+			lbl.pack(anchor='w')
+			return
+		row = ttk.Frame(self.tagging_tags_frame, style='App.TFrame')
+		row.pack(fill='x')
+		for t in tags:
+			chip = ttk.Label(row, text=f' {t} ', style='Tag.TLabel')
+			chip.pack(side='left', padx=3, pady=1)
+
+	def _on_tagging_entry_key(self, event: tk.Event):  # type: ignore[override]
+		# Prevent nav keys from inserting characters while the entry is focused
+		try:
+			k = (event.char or '').lower()
+			ks = (event.keysym or '').lower()
+			if k in [self.tag_prev_key, self.tag_next_key]:
+				self._navigate(-1 if k == self.tag_prev_key else 1)
+				self._update_tagging_image()
+				return 'break'
+			if ks in ['left', 'right']:
+				self._navigate(-1 if ks == 'left' else 1)
+				self._update_tagging_image()
+				return 'break'
+		except Exception:
+			return None
+		return None
+
+	def _on_tagging_entry_nav(self, direction: str):  # bound via lambda
+		try:
+			if direction == 'left':
+				self._navigate(-1)
+			else:
+				self._navigate(1)
+			self._update_tagging_image()
+			return 'break'
+		except Exception:
+			return 'break'
+
 	def _add_hotkey_mapping(self) -> None:
 		k = (self.hk_new_key_var.get() or '').strip().lower()
 		t = (self.hk_new_tag_var.get() or '').strip().lower()
@@ -1713,9 +2089,23 @@ class KeyTaggerApp:
 		if not k:
 			return
 		self.last_key_var.set(f'Last key: {k}')
+		# If typing in the tagging entry, only allow navigation keys; ignore tag hotkey mappings
+		try:
+			if self.tagging_mode and getattr(self, 'tagging_entry', None) and (self.tagging_entry.focus_get() is self.tagging_entry):
+				if k in [self.tag_prev_key, self.tag_next_key]:
+					self._navigate(-1 if k == self.tag_prev_key else 1)
+					self._update_tagging_image()
+				return
+		except Exception:
+			pass
 		# In viewing mode, A/D navigate
 		if self.view_mode and k in ['a', 'd']:
 			self._navigate(-1 if k == 'a' else 1)
+			return
+		# In tagging mode, use assignable keys to navigate
+		if self.tagging_mode and k in [self.tag_prev_key, self.tag_next_key]:
+			self._navigate(-1 if k == self.tag_prev_key else 1)
+			self._update_tagging_image()
 			return
 		tag = self.hotkeys.get(k)
 		if not tag:
@@ -1723,18 +2113,28 @@ class KeyTaggerApp:
 		self.apply_tag_to_selection(tag)
 
 	def on_arrow_left(self, event: tk.Event) -> None:
-		if self.view_mode:
+		if self.view_mode or self.tagging_mode:
 			self._navigate(-1)
+			if self.tagging_mode:
+				self._update_tagging_image()
 
 	def on_arrow_right(self, event: tk.Event) -> None:
-		if self.view_mode:
+		if self.view_mode or self.tagging_mode:
 			self._navigate(1)
+			if self.tagging_mode:
+				self._update_tagging_image()
 
 	def on_ctrl_key(self, event: tk.Event) -> None:
 		k = (event.keysym or '').lower()
 		if k in [str(d) for d in range(0, 10)]:
 			combo = f'ctrl+{k}'
 			self.last_key_var.set(f'Last key: {combo}')
+			# Suppress tag hotkeys while typing in tagging entry
+			try:
+				if self.tagging_mode and getattr(self, 'tagging_entry', None) and (self.tagging_entry.focus_get() is self.tagging_entry):
+					return
+			except Exception:
+				pass
 			tag = self.hotkeys.get(combo)
 			if tag:
 				self.apply_tag_to_selection(tag)
