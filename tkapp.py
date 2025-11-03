@@ -749,9 +749,6 @@ class KeyTaggerApp:
 			frame.bind('<Leave>', _on_leave)
 			self.card_frames.append(frame)
 
-			# Select button (square) top-left
-			btn = ttk.Button(frame, text='■', width=2, command=lambda rid=rec.id: self.toggle_select(rid), style='Small.TButton')
-			btn.grid(row=0, column=0, sticky='nw')
 
 			# Always prefer a square thumbnail sized to THUMB_SIZE with black bars
 			thumb_path = None
@@ -770,6 +767,7 @@ class KeyTaggerApp:
 
 			img_label = ttk.Label(frame)
 			img_label.grid(row=1, column=0, padx=0, pady=0)
+			img_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 			# Fallbacks: show original image if available; audio uses placeholder
 			if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
 				thumb_path = rec.file_path
@@ -802,6 +800,7 @@ class KeyTaggerApp:
 
 			name_label = ttk.Label(frame, text=rec.file_name, width=40, wraplength=max(120, THUMB_SIZE), justify='center')
 			name_label.grid(row=2, column=0, padx=0, pady=(4, 0))
+			name_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 
 			# Tags row
 			tags = []
