@@ -220,6 +220,8 @@ class KeyTaggerApp:
 		self._gif_stop_event: Optional[threading.Event] = None
 		self._gif_path_playing: Optional[str] = None
 		self._gif_pause: bool = False
+		# Toast notification window (single-instance)
+		self._toast_window: Optional[tk.Toplevel] = None
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -1718,6 +1720,88 @@ class KeyTaggerApp:
 			if tag:
 				self.apply_tag_to_selection(tag)
 
+	def _show_toast(self, text: str, start_delay_ms: int = 900, fade_step_ms: int = 60, start_alpha: float = 0.95, step_delta: float = 0.08) -> None:
+		# Destroy any existing toast so we only show the latest
+		try:
+			if getattr(self, '_toast_window', None) is not None:
+				try:
+					self._toast_window.destroy()  # type: ignore[union-attr]
+				except Exception:
+					pass
+				self._toast_window = None
+		except Exception:
+			self._toast_window = None
+		# Create borderless, topmost window that won't steal focus
+		toast = tk.Toplevel(self.root)
+		self._toast_window = toast
+		try:
+			toast.overrideredirect(True)
+			toast.attributes('-alpha', float(start_alpha))
+			toast.attributes('-topmost', True)
+		except Exception:
+			pass
+		# Content
+		bg = self.palette.get('tag_bg', '#1e293b')
+		fg = self.palette.get('tag_fg', '#93c5fd')
+		frm = tk.Frame(toast, bg=bg, bd=0, highlightthickness=0)
+		frm.pack(fill='both', expand=True)
+		lbl = tk.Label(frm, text=text, bg=bg, fg=fg, padx=12, pady=8)
+		lbl.pack()
+		# Size and position (bottom-right of root)
+		try:
+			toast.update_idletasks()
+			root_x = int(self.root.winfo_rootx())
+			root_y = int(self.root.winfo_rooty())
+			root_w = int(self.root.winfo_width())
+			root_h = int(self.root.winfo_height())
+			win_w = int(toast.winfo_reqwidth())
+			win_h = int(toast.winfo_reqheight())
+			x = root_x + max(0, root_w - win_w - 24)
+			y = root_y + max(0, root_h - win_h - 24)
+			toast.geometry(f"{win_w}x{win_h}+{x}+{y}")
+		except Exception:
+			pass
+		# Keep focus on the main window (avoid toast stealing input)
+		try:
+			self.root.focus_force()
+		except Exception:
+			pass
+		# Fade-out sequence
+		def _fade(step: int = 0) -> None:
+			# If a newer toast replaced this one, stop
+			if toast is not getattr(self, '_toast_window', None):
+				try:
+					toast.destroy()
+				except Exception:
+					pass
+				return
+			alpha = max(0.0, float(start_alpha) - float(step) * float(step_delta))
+			try:
+				toast.attributes('-alpha', alpha)
+			except Exception:
+				pass
+			if alpha <= 0.02:
+				try:
+					toast.destroy()
+				except Exception:
+					pass
+				if getattr(self, '_toast_window', None) is toast:
+					self._toast_window = None
+				return
+			try:
+				toast.after(int(fade_step_ms), lambda: _fade(step + 1))
+			except Exception:
+				pass
+		try:
+			toast.after(int(start_delay_ms), _fade)
+		except Exception:
+			# If scheduling fails, destroy immediately
+			try:
+				toast.destroy()
+			except Exception:
+				pass
+			self._toast_window = None
+
 	def apply_tag_to_selection(self, tag: str) -> None:
 		if not self.selected_ids:
 			return
@@ -1738,11 +1822,11 @@ class KeyTaggerApp:
 		# Immediately refresh the grid so tag changes are visible
 		self.refresh_records()
 		if changed_add and not changed_remove:
-			messagebox.showinfo('Tag Applied', f"Added '{tag}' to {changed_add} item(s)")
+			self._show_toast(f"Added '{tag}' to {changed_add} item(s)")
 		elif changed_remove and not changed_add:
-			messagebox.showinfo('Tag Removed', f"Removed '{tag}' from {changed_remove} item(s)")
+			self._show_toast(f"Removed '{tag}' from {changed_remove} item(s)")
 		else:
-			messagebox.showinfo('Tags Updated', f"Added '{tag}' to {changed_add}, removed from {changed_remove}")
+			self._show_toast(f"Added '{tag}' to {changed_add}, removed from {changed_remove}")
 
 	def open_hotkey_settings(self) -> None:
 		# Deprecated: hotkeys are managed in the left panel now.
