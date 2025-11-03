@@ -165,6 +165,7 @@ class KeyTaggerApp:
 		self.db = Database(base_dir='.')
 		self.hotkeys: Dict[str, str] = load_hotkeys()
 		self.selected_ids: Set[int] = set()
+		self._selection_anchor_id: Optional[int] = None
 		self.photo_cache: Dict[int, ImageTk.PhotoImage] = {}
 		self.records: List[MediaRecord] = []
 		self.card_frames: List[ttk.Frame] = []
@@ -649,8 +650,14 @@ class KeyTaggerApp:
 
 		threading.Thread(target=run_scan, daemon=True).start()
 
-	def refresh_records(self) -> None:
+	def refresh_records(self, preserve_selection: bool = False) -> None:
 		root_dir = self.folder_var.get().strip() or None
+		prev_selected: Set[int] = set()
+		if preserve_selection:
+			try:
+				prev_selected = {int(x) for x in (self.selected_ids or set())}
+			except Exception:
+				prev_selected = set(self.selected_ids or set())
 		# Build filters
 		tags_text = (self.filter_tags_var.get() or '').strip()
 		required_tags = [t.strip().lower() for t in tags_text.split(',') if t.strip()] or None
@@ -662,7 +669,15 @@ class KeyTaggerApp:
 			if root_dir:
 				records = [r for r in records if os.path.abspath(r.root_dir) == os.path.abspath(root_dir)]
 		self.records = records
-		self.selected_ids.clear()
+		if preserve_selection:
+			try:
+				new_ids = {int(r.id) for r in self.records}
+				self.selected_ids = {int(x) for x in prev_selected if int(x) in new_ids}
+			except Exception:
+				new_ids_fallback = set(getattr(r, 'id', None) for r in self.records)
+				self.selected_ids = set(x for x in prev_selected if x in new_ids_fallback)
+		else:
+			self.selected_ids.clear()
 		for w in self.grid_frame.winfo_children():
 			w.destroy()
 		self.photo_cache.clear()
@@ -721,7 +736,7 @@ class KeyTaggerApp:
 				col = idx % cols
 			frame = ttk.Frame(self.grid_frame, padding=8, style='Card.TFrame')
 			frame.grid(row=row, column=col, padx=pad, pady=pad, sticky='n')
-			frame.bind('<Button-1>', lambda e, rid=rec.id: self.toggle_select(rid))
+			frame.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 			# Hover highlight
 			def _on_enter(e, rid=rec.id, f=frame):
 				style = ttk.Style()
@@ -1620,13 +1635,18 @@ class KeyTaggerApp:
 					self.db.remove_media_tags(int(mid), [tag])
 				except Exception:
 					pass
-			self.refresh_records()
+			self.refresh_records(preserve_selection=True)
 
 	def toggle_select(self, media_id: int) -> None:
 		if media_id in self.selected_ids:
 			self.selected_ids.remove(media_id)
 		else:
 			self.selected_ids.add(media_id)
+		# Update selection anchor on normal click toggles
+		try:
+			self._selection_anchor_id = int(media_id)
+		except Exception:
+			self._selection_anchor_id = media_id
 		# Update the specific frame background
 		for child in self.grid_frame.winfo_children():
 			# child is a frame containing a label named with file name; we stored no ids, so check text widget
@@ -1719,6 +1739,86 @@ class KeyTaggerApp:
 			tag = self.hotkeys.get(combo)
 			if tag:
 				self.apply_tag_to_selection(tag)
+
+	def _find_index_by_id(self, media_id: int) -> Optional[int]:
+		try:
+			mid = int(media_id)
+		except Exception:
+			mid = media_id
+		for i, r in enumerate(self.records):
+			try:
+				if int(r.id) == int(mid):
+					return i
+			except Exception:
+				if getattr(r, 'id', None) == mid:
+					return i
+		return None
+
+	def on_item_click(self, event: tk.Event, media_id: int) -> None:
+		# Detect modifier keys: Shift (0x0001), Control (0x0004)
+		shift_down = False
+		ctrl_down = False
+		try:
+			state_val = int(getattr(event, 'state', 0))
+			shift_down = bool(state_val & 0x0001)
+			ctrl_down = bool(state_val & 0x0004)
+		except Exception:
+			shift_down = False
+			ctrl_down = False
+		# Shift+click: select contiguous range (replace selection)
+		if shift_down and self._selection_anchor_id is not None:
+			start_idx = self._find_index_by_id(self._selection_anchor_id)
+			end_idx = self._find_index_by_id(media_id)
+			if start_idx is not None and end_idx is not None:
+				lo = min(int(start_idx), int(end_idx))
+				hi = max(int(start_idx), int(end_idx))
+				try:
+					self.selected_ids = {int(r.id) for r in self.records[lo:hi + 1]}
+				except Exception:
+					self.selected_ids = set(r.id for r in self.records[lo:hi + 1])
+				self._refresh_card_styles()
+				# In viewing mode, update viewer to clicked item
+				if self.view_mode:
+					try:
+						self.current_view_id = int(media_id)
+					except Exception:
+						self.current_view_id = media_id
+					self._update_viewer_image()
+					self._scroll_selected_into_view()
+				# Update anchor to the last clicked endpoint
+				try:
+					self._selection_anchor_id = int(media_id)
+				except Exception:
+					self._selection_anchor_id = media_id
+				return
+		# Ctrl+click: toggle item without affecting other selections
+		if ctrl_down:
+			self.toggle_select(media_id)
+			try:
+				self._selection_anchor_id = int(media_id)
+			except Exception:
+				self._selection_anchor_id = media_id
+			return
+		# Plain click: select only this item
+		try:
+			mid_int = int(media_id)
+		except Exception:
+			mid_int = media_id  # type: ignore[assignment]
+		self.selected_ids = {mid_int} if isinstance(mid_int, int) else {media_id}
+		self._refresh_card_styles()
+		# Update viewer to clicked item in viewing mode
+		if self.view_mode:
+			try:
+				self.current_view_id = int(media_id)
+			except Exception:
+				self.current_view_id = media_id
+			self._update_viewer_image()
+			self._scroll_selected_into_view()
+		# Update anchor
+		try:
+			self._selection_anchor_id = int(media_id)
+		except Exception:
+			self._selection_anchor_id = media_id
 
 	def _show_toast(self, text: str, start_delay_ms: int = 900, fade_step_ms: int = 60, start_alpha: float = 0.95, step_delta: float = 0.08) -> None:
 		# Destroy any existing toast so we only show the latest
@@ -1819,8 +1919,8 @@ class KeyTaggerApp:
 					changed_add += 1
 			except Exception:
 				pass
-		# Immediately refresh the grid so tag changes are visible
-		self.refresh_records()
+		# Immediately refresh the grid so tag changes are visible; preserve selection
+		self.refresh_records(preserve_selection=True)
 		if changed_add and not changed_remove:
 			self._show_toast(f"Added '{tag}' to {changed_add} item(s)")
 		elif changed_remove and not changed_add:
