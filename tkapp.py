@@ -198,6 +198,10 @@ class KeyTaggerApp:
 		self.tag_prev_key_var = tk.StringVar(value=self.tag_prev_key)
 		self.tag_next_key_var = tk.StringVar(value=self.tag_next_key)
 		self.tag_input_var = tk.StringVar()
+		# Tag autocomplete state
+		self._tag_suggest_window: Optional[tk.Toplevel] = None
+		self._tag_suggest_list: Optional[tk.Listbox] = None
+		self._tag_suggest_items: List[str] = []
 		# Media playback state
 		self._video_thread: Optional[threading.Thread] = None
 		self._video_stop_event: Optional[threading.Event] = None
@@ -396,9 +400,15 @@ class KeyTaggerApp:
 		lbl_tag.grid(row=0, column=0, padx=(0, 8))
 		self.tagging_entry = ttk.Entry(self.tagging_input_frame, textvariable=self.tag_input_var)
 		self.tagging_entry.grid(row=0, column=1, sticky='ew')
-		self.tagging_entry.bind('<Return>', self._on_tagging_enter)
+		self.tagging_entry.bind('<Return>', self._on_tagging_return)
 		# Intercept navigation hotkeys while the entry has focus so they don't insert characters
 		self.tagging_entry.bind('<Key>', self._on_tagging_entry_key)
+		# Autocomplete bindings
+		self.tagging_entry.bind('<KeyRelease>', self._on_tagging_entry_change)
+		self.tagging_entry.bind('<Down>', self._on_tag_suggest_down)
+		self.tagging_entry.bind('<Up>', self._on_tag_suggest_up)
+		self.tagging_entry.bind('<Tab>', self._on_tag_suggest_accept)
+		self.tagging_entry.bind('<Escape>', lambda e: (self._hide_tag_suggestions(), 'break'))
 		self.tagging_entry.bind('<Left>', lambda e: self._on_tagging_entry_nav('left'))
 		self.tagging_entry.bind('<Right>', lambda e: self._on_tagging_entry_nav('right'))
 		self.tagging_input_frame.grid_remove()
@@ -1034,13 +1044,10 @@ class KeyTaggerApp:
 				self.tagging_input_frame.grid()
 				# Show tagging nav config in sidebar
 				self.tagging_nav_frame.pack(fill='x', pady=(6, 0))
-				# Hide media controls in tagging mode to preserve space
-				try:
-					self.video_controls.grid_remove()
-					self.audio_controls.grid_remove()
-				except Exception:
-					pass
+				# Controls will be shown/hidden per media in _update_tagging_image
 			else:
+				# Ensure autocomplete popup is removed when leaving tagging mode
+				self._hide_tag_suggestions()
 				# Restore grid canvas
 				self.canvas.grid(row=0, column=0, sticky='nsew')
 				self.scroll_y.grid(row=0, column=1, sticky='ns')
@@ -1067,7 +1074,7 @@ class KeyTaggerApp:
 	def _update_tagging_image(self) -> None:
 		if not self.tagging_mode:
 			return
-		# Render current record similarly to viewer mode but scaled to occupy most of the window
+		# Render current record similarly to viewing mode but scaled to occupy most of the window
 		rec = self._find_record_by_id(self.current_view_id)
 		if not rec:
 			try:
@@ -1076,14 +1083,29 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 			return
+		# Determine media type and stop previous playback if changed
+		mt = str(getattr(rec, 'media_type', '')).lower()
+		try:
+			cur_id = int(getattr(rec, 'id', -1))
+		except Exception:
+			cur_id = getattr(rec, 'id', -1)
+		changed = (self._viewer_current_id != cur_id) or (self._viewer_current_type != mt)
+		if changed:
+			self._stop_media_playback()
+			self._viewer_current_id = cur_id
+			self._viewer_current_type = mt
+		# Hide controls by default
+		try:
+			self.video_controls.grid_remove()
+			self.audio_controls.grid_remove()
+		except Exception:
+			pass
+		# Compute available area inside viewer container
 		try:
 			self.viewer_container.update_idletasks()
-			# Compute available space inside the viewer container so we fit in the current window size
 			vc_w = int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 1280)
 			vc_h = int(self.viewer_container.winfo_height() or 600)
-			# Width available is container width minus padding
 			avail_w = max(200, vc_w - 16)
-			# Subtract the tag list + input heights (actual if available, else requested) and padding
 			try:
 				reserved_tags = int(self.tagging_tags_frame.winfo_height() or self.tagging_tags_frame.winfo_reqheight() or 0)
 			except Exception:
@@ -1096,9 +1118,9 @@ class KeyTaggerApp:
 			avail_h = max(200, vc_h - reserved_h)
 		except Exception:
 			avail_w, avail_h = 1000, 700
-		try:
-			mt = str(getattr(rec, 'media_type', '')).lower()
-			if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+		# Branch by media type
+		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			try:
 				with Image.open(rec.file_path) as im:
 					im = im.convert('RGB')
 					w, h = im.size
@@ -1113,10 +1135,67 @@ class KeyTaggerApp:
 					self._set_viewer_photo(photo)
 					self._render_tagging_tags()
 					return
-			# Audio: show placeholder scaled
-			if mt == 'audio':
-				path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
-				if path and os.path.exists(path):
+			except Exception:
+				pass
+		if mt == 'video' and rec.file_path and os.path.exists(rec.file_path):
+			# Show controls, no autoplay. Probe metadata and render first frame if possible
+			try:
+				self.video_controls.grid()
+				self._video_pause = True
+				self.video_play_btn.configure(text='Play')
+				try:
+					import cv2  # type: ignore
+					cap_probe = cv2.VideoCapture(rec.file_path)
+					if cap_probe.isOpened():
+						fps = float(cap_probe.get(cv2.CAP_PROP_FPS) or 30.0) or 30.0
+						total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+						duration = (total_frames / fps) if fps > 0 else 0.0
+						cap_probe.release()
+					else:
+						fps = 30.0; duration = 0.0
+					self._video_fps = fps
+					self._video_duration_s = duration
+					self._video_updating_slider = True
+					self.video_seek.configure(from_=0.0, to=max(0.01, float(duration) or 0.01))
+					self._video_pos_var.set(0.0)
+					self._video_updating_slider = False
+					self.video_time_lbl.configure(text=f"00:00 / {self._format_time(duration)}")
+				except Exception:
+					pass
+				try:
+					import cv2  # type: ignore
+					cap = cv2.VideoCapture(rec.file_path)
+					ok, frame = cap.read()
+					if ok:
+						frame_rgb = frame[:, :, ::-1]
+						img = Image.fromarray(frame_rgb)
+						w, h = img.size
+						scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						resized = img.resize((new_w, new_h), Image.LANCZOS)
+						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+						canvas_img.paste(resized, offset)
+						photo = ImageTk.PhotoImage(canvas_img)
+						self._set_viewer_photo(photo)
+					cap.release()
+				except Exception:
+					pass
+				self._render_tagging_tags()
+				return
+			except Exception:
+				pass
+		if mt == 'audio':
+			try:
+				self.audio_controls.grid()
+				self.audio_play_btn.configure(text='Play Audio')
+				self.video_controls.grid_remove()
+			except Exception:
+				pass
+			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+			if path and os.path.exists(path):
+				try:
 					with Image.open(path) as im:
 						im = im.convert('RGB')
 						w, h = im.size
@@ -1131,10 +1210,13 @@ class KeyTaggerApp:
 						self._set_viewer_photo(photo)
 						self._render_tagging_tags()
 						return
-			# Video: prefer thumbnail; if missing, fall back to audio-style placeholder
-			if mt == 'video':
-				path = getattr(rec, 'thumbnail_path', None)
-				if path and os.path.exists(path):
+				except Exception:
+					pass
+		# Video fallback to thumbnail/placeholder
+		if mt == 'video':
+			path = getattr(rec, 'thumbnail_path', None)
+			if path and os.path.exists(path):
+				try:
 					with Image.open(path) as im:
 						im = im.convert('RGB')
 						w, h = im.size
@@ -1149,9 +1231,12 @@ class KeyTaggerApp:
 						self._set_viewer_photo(photo)
 						self._render_tagging_tags()
 						return
-				# No thumbnail available: reuse audio placeholder as a generic badge
-				ph = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
-				if ph and os.path.exists(ph):
+				except Exception:
+					pass
+			# No thumbnail available: use audio-style placeholder as a badge
+			ph = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
+			if ph and os.path.exists(ph):
+				try:
 					with Image.open(ph) as im:
 						im = im.convert('RGB')
 						w, h = im.size
@@ -1165,9 +1250,12 @@ class KeyTaggerApp:
 						photo = ImageTk.PhotoImage(canvas_img)
 						self._set_viewer_photo(photo)
 						return
-			# Fallback to thumbnail
-			path = rec.thumbnail_path if getattr(rec, 'thumbnail_path', None) else None
-			if path and os.path.exists(path):
+				except Exception:
+					pass
+		# Generic fallback to thumbnail
+		path = rec.thumbnail_path if getattr(rec, 'thumbnail_path', None) else None
+		if path and os.path.exists(path):
+			try:
 				with Image.open(path) as im:
 					im = im.convert('RGB')
 					w, h = im.size
@@ -1182,10 +1270,12 @@ class KeyTaggerApp:
 					self._set_viewer_photo(photo)
 					self._render_tagging_tags()
 					return
-		except Exception:
-			pass
+			except Exception:
+				pass
 
 	def _on_tagging_enter(self, event: tk.Event) -> None:
+		# Accept and hide suggestions if visible
+		self._hide_tag_suggestions()
 		text = (self.tag_input_var.get() or '').strip().lower()
 		if not text:
 			return
@@ -1729,6 +1819,17 @@ class KeyTaggerApp:
 
 	def _toggle_video_play(self) -> None:
 		try:
+			# If no video is currently playing, start playback for the selected video
+			if not self._is_video_playing():
+				rec = self._find_record_by_id(self.current_view_id)
+				if rec and str(getattr(rec, 'media_type', '')).lower() == 'video' and rec.file_path and os.path.exists(rec.file_path):
+					# Increment session to keep A/V sync semantics consistent
+					try:
+						self._viewer_session += 1
+					except Exception:
+						self._viewer_session = int(self._viewer_session) + 1 if isinstance(self._viewer_session, int) else 1
+					self._start_video_playback(rec.file_path, int(self._viewer_session))
+					return
 			self._video_pause = not self._video_pause
 			self.video_play_btn.configure(text=('Play' if self._video_pause else 'Pause'))
 			# Sync audio with pause/resume
@@ -1867,6 +1968,8 @@ class KeyTaggerApp:
 	def _toggle_dark_mode(self, enabled: bool) -> None:
 		self.dark_mode = bool(enabled)
 		set_dark_mode(self.dark_mode)
+		# Close any transient autocomplete so it will pick up new theme on next open
+		self._hide_tag_suggestions()
 		self._setup_theme()
 		# Refresh card styles and canvas bg
 		try:
@@ -1960,6 +2063,224 @@ class KeyTaggerApp:
 			return 'break'
 		except Exception:
 			return 'break'
+
+	def _ensure_tag_suggest_window(self) -> None:
+		# Create the lightweight popup and listbox if needed
+		if self._tag_suggest_window and self._tag_suggest_list:
+			return
+		try:
+			win = tk.Toplevel(self.root)
+			win.overrideredirect(True)
+			try:
+				win.attributes('-topmost', True)
+			except Exception:
+				pass
+			# Prevent taking focus from the entry
+			win.transient(self.root)
+			# Listbox for suggestions
+			lb = tk.Listbox(win, height=8, activestyle='dotbox', exportselection=False)
+			# Simple theming
+			try:
+				lb.configure(
+					background=self.palette.get('card_bg', '#ffffff'),
+					foreground=self.palette.get('text', '#111827'),
+					selectbackground=self.palette.get('selected_bg', '#2563eb'),
+					selectforeground='#ffffff'
+				)
+			except Exception:
+				pass
+			lb.pack(fill='both', expand=True)
+			# Mouse interactions
+			lb.bind('<Button-1>', self._on_tag_suggest_click)
+			lb.bind('<Double-Button-1>', self._on_tag_suggest_double_click)
+			self._tag_suggest_window = win
+			self._tag_suggest_list = lb
+		except Exception:
+			self._tag_suggest_window = None
+			self._tag_suggest_list = None
+
+	def _place_tag_suggest_window(self) -> None:
+		# Position the popup just under the tagging entry
+		if not (self._tag_suggest_window and self.tagging_entry):
+			return
+		try:
+			self.tagging_entry.update_idletasks()
+			self._tag_suggest_window.update_idletasks()
+			# Desired geometry
+			entry_x = int(self.tagging_entry.winfo_rootx())
+			entry_y = int(self.tagging_entry.winfo_rooty())
+			entry_h = int(self.tagging_entry.winfo_height())
+			w = int(max(160, self.tagging_entry.winfo_width()))
+			# Preferred: below the entry
+			x = entry_x
+			y = entry_y + entry_h
+			# Compute required height; clamp to screen if needed
+			screen_w = int(self.root.winfo_screenwidth())
+			screen_h = int(self.root.winfo_screenheight())
+			try:
+				req_h = int(self._tag_suggest_window.winfo_reqheight()) or 200
+			except Exception:
+				req_h = 200
+			# If it would overflow bottom, try placing above
+			if y + req_h > screen_h - 10:
+				y = max(0, entry_y - req_h)
+			# Clamp x so it stays on screen
+			if x + w > screen_w - 10:
+				x = max(0, screen_w - w - 10)
+			x = max(0, x)
+			y = max(0, y)
+			self._tag_suggest_window.geometry(f"{w}x{req_h}+{x}+{y}")
+		except Exception:
+			pass
+
+	def _hide_tag_suggestions(self) -> None:
+		try:
+			if self._tag_suggest_window is not None:
+				try:
+					self._tag_suggest_window.destroy()
+				except Exception:
+					pass
+		finally:
+			self._tag_suggest_window = None
+			self._tag_suggest_list = None
+			self._tag_suggest_items = []
+
+	def _on_tagging_entry_change(self, event: tk.Event) -> None:
+		# Update suggestions based on current text
+		try:
+			if not self.tagging_mode:
+				self._hide_tag_suggestions()
+				return
+			text = (self.tag_input_var.get() or '').strip().lower()
+			if not text:
+				self._hide_tag_suggestions()
+				return
+			# Fetch all tags and filter by prefix
+			try:
+				all_tags = self.db.all_tags()
+			except Exception:
+				all_tags = []
+			matches = [t for t in all_tags if isinstance(t, str) and t.startswith(text)]
+			# Avoid showing only exact match
+			if len(matches) == 1 and matches[0] == text:
+				self._hide_tag_suggestions()
+				return
+			matches = matches[:20]
+			if not matches:
+				self._hide_tag_suggestions()
+				return
+			self._ensure_tag_suggest_window()
+			if not (self._tag_suggest_window and self._tag_suggest_list):
+				return
+			self._tag_suggest_items = matches
+			# Adjust list height to number of items (max ~8)
+			try:
+				self._tag_suggest_list.configure(height=min(len(matches), 8))
+			except Exception:
+				pass
+			self._tag_suggest_list.delete(0, tk.END)
+			for m in matches:
+				self._tag_suggest_list.insert(tk.END, m)
+			# Select first item by default
+			if matches:
+				try:
+					self._tag_suggest_list.selection_clear(0, tk.END)
+					self._tag_suggest_list.selection_set(0)
+					self._tag_suggest_list.activate(0)
+				except Exception:
+					pass
+			self._place_tag_suggest_window()
+			try:
+				self._tag_suggest_window.deiconify()
+			except Exception:
+				pass
+		except Exception:
+			self._hide_tag_suggestions()
+		# Do not propagate further
+		return None
+
+	def _on_tagging_return(self, event: tk.Event):
+		# If suggestions visible, accept current suggestion into the entry (no add yet)
+		try:
+			if self._tag_suggest_window and self._tag_suggest_list and self._tag_suggest_items:
+				sel = self._tag_suggest_list.curselection()
+				idx = int(sel[0]) if sel else 0
+				if 0 <= idx < len(self._tag_suggest_items):
+					selected = str(self._tag_suggest_items[idx])
+					current = (self.tag_input_var.get() or '').strip().lower()
+					# Only replace if it would change the text
+					if selected and selected != current:
+						self.tag_input_var.set(selected)
+						try:
+							self.tagging_entry.icursor(tk.END)
+						except Exception:
+							pass
+						self._hide_tag_suggestions()
+						return 'break'
+		except Exception:
+			pass
+		# Otherwise, perform the normal add
+		self._on_tagging_enter(event)
+		return 'break'
+
+	def _on_tag_suggest_down(self, event: tk.Event):
+		# Move selection down in suggestion list
+		if not self._tag_suggest_list:
+			return None
+		try:
+			sel = self._tag_suggest_list.curselection()
+			idx = int(sel[0]) if sel else -1
+			idx = min(idx + 1, max(0, len(self._tag_suggest_items) - 1))
+			self._tag_suggest_list.selection_clear(0, tk.END)
+			self._tag_suggest_list.selection_set(idx)
+			self._tag_suggest_list.activate(idx)
+			return 'break'
+		except Exception:
+			return 'break'
+
+	def _on_tag_suggest_up(self, event: tk.Event):
+		# Move selection up in suggestion list
+		if not self._tag_suggest_list:
+			return None
+		try:
+			sel = self._tag_suggest_list.curselection()
+			idx = int(sel[0]) if sel else 0
+			idx = max(idx - 1, 0)
+			self._tag_suggest_list.selection_clear(0, tk.END)
+			self._tag_suggest_list.selection_set(idx)
+			self._tag_suggest_list.activate(idx)
+			return 'break'
+		except Exception:
+			return 'break'
+
+	def _accept_tag_suggestion(self) -> None:
+		if not (self._tag_suggest_list and self._tag_suggest_items):
+			return
+		try:
+			sel = self._tag_suggest_list.curselection()
+			idx = int(sel[0]) if sel else 0
+			if 0 <= idx < len(self._tag_suggest_items):
+				val = str(self._tag_suggest_items[idx])
+				self.tag_input_var.set(val)
+				try:
+					self.tagging_entry.icursor(tk.END)
+				except Exception:
+					pass
+		finally:
+			self._hide_tag_suggestions()
+
+	def _on_tag_suggest_accept(self, event: tk.Event):
+		# Accept selected suggestion into the entry and keep focus
+		self._accept_tag_suggestion()
+		return 'break'
+
+	def _on_tag_suggest_click(self, event: tk.Event):
+		self._accept_tag_suggestion()
+		return 'break'
+
+	def _on_tag_suggest_double_click(self, event: tk.Event):
+		self._accept_tag_suggestion()
+		return 'break'
 
 	def _add_hotkey_mapping(self) -> None:
 		k = (self.hk_new_key_var.get() or '').strip().lower()
