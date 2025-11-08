@@ -1282,16 +1282,40 @@ class KeyTaggerApp:
 		if self.current_view_id is None:
 			self.tag_input_var.set('')
 			return
+		# Toggle behavior: remove if exists, else add
+		tag_exists = False
 		try:
-			self.db.add_media_tags(int(self.current_view_id), [text])
+			existing = set(self.db.get_media_tags(int(self.current_view_id)))
+			tag_exists = text in existing
 		except Exception:
 			try:
-				self.db.add_media_tags(self.current_view_id, [text])
+				existing2 = set(self.db.get_media_tags(self.current_view_id))  # type: ignore[arg-type]
+				tag_exists = text in existing2
 			except Exception:
-				pass
+				tag_exists = False
+		if tag_exists:
+			# Remove tag
+			try:
+				self.db.remove_media_tags(int(self.current_view_id), [text])
+			except Exception:
+				try:
+					self.db.remove_media_tags(self.current_view_id, [text])  # type: ignore[arg-type]
+				except Exception:
+					pass
+			toast = f"Removed '{text}'"
+		else:
+			# Add tag
+			try:
+				self.db.add_media_tags(int(self.current_view_id), [text])
+			except Exception:
+				try:
+					self.db.add_media_tags(self.current_view_id, [text])  # type: ignore[arg-type]
+				except Exception:
+					pass
+			toast = f"Added '{text}'"
 		self.tag_input_var.set('')
 		self.refresh_records(preserve_selection=True)
-		self._show_toast(f"Added '{text}'")
+		self._show_toast(toast)
 		# Update visible tag list and keep focus for rapid entry
 		try:
 			self._render_tagging_tags()
