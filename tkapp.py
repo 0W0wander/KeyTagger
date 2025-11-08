@@ -202,6 +202,11 @@ class KeyTaggerApp:
 		self._tag_suggest_window: Optional[tk.Toplevel] = None
 		self._tag_suggest_list: Optional[tk.Listbox] = None
 		self._tag_suggest_items: List[str] = []
+		# Hotkey add inputs + placeholders
+		self._hk_key_placeholder: str = 'Hotkey (e.g., z or ctrl+1)'
+		self._hk_tag_placeholder: str = 'Tag name'
+		self.hk_entry_key: Optional[tk.Entry] = None
+		self.hk_entry_tag: Optional[tk.Entry] = None
 		# Media playback state
 		self._video_thread: Optional[threading.Thread] = None
 		self._video_stop_event: Optional[threading.Event] = None
@@ -311,10 +316,13 @@ class KeyTaggerApp:
 		self.hk_new_tag_var = tk.StringVar()
 		row_add = ttk.Frame(side, style='Side.TFrame')
 		row_add.pack(fill='x', pady=(0, 6))
-		entry_key = ttk.Entry(row_add, textvariable=self.hk_new_key_var, width=8)
-		entry_key.pack(side='left')
-		entry_tag = ttk.Entry(row_add, textvariable=self.hk_new_tag_var, width=16)
-		entry_tag.pack(side='left', padx=(6, 6))
+		# Use tk.Entry here to support placeholder text color
+		self.hk_entry_key = tk.Entry(row_add, textvariable=self.hk_new_key_var, width=8)
+		self.hk_entry_key.pack(side='left')
+		self.hk_entry_tag = tk.Entry(row_add, textvariable=self.hk_new_tag_var, width=16)
+		self.hk_entry_tag.pack(side='left', padx=(6, 6))
+		self._install_entry_placeholder(self.hk_entry_key, self.hk_new_key_var, self._hk_key_placeholder)
+		self._install_entry_placeholder(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
 		btn_add = ttk.Button(row_add, text='Add', command=self._add_hotkey_mapping, style='Small.TButton')
 		btn_add.pack(side='left')
 		self.hotkey_list_frame = ttk.Frame(side, style='Side.TFrame')
@@ -493,6 +501,8 @@ class KeyTaggerApp:
 
 		# Create rounded-corner button skins using 9-patch images
 		self._install_rounded_button_theme(style)
+		# Refresh placeholder colors if present
+		self._refresh_hotkey_placeholders()
 
 		# Dark mode button overrides
 		if self.dark_mode:
@@ -1319,6 +1329,8 @@ class KeyTaggerApp:
 		# Update visible tag list and keep focus for rapid entry
 		try:
 			self._render_tagging_tags()
+			# Refresh sidebar tag list (new tags may appear or disappear)
+			self._render_hotkey_list()
 			self.tagging_entry.focus_set()
 		except Exception:
 			pass
@@ -1995,6 +2007,7 @@ class KeyTaggerApp:
 		# Close any transient autocomplete so it will pick up new theme on next open
 		self._hide_tag_suggestions()
 		self._setup_theme()
+		self._refresh_hotkey_placeholders()
 		# Refresh card styles and canvas bg
 		try:
 			self.canvas.configure(background=self.palette.get('canvas_bg', '#f6f7fb'))
@@ -2014,25 +2027,48 @@ class KeyTaggerApp:
 			return
 		for w in self.hotkey_list_frame.winfo_children():
 			w.destroy()
-		if not self.hotkeys:
-			lbl = ttk.Label(self.hotkey_list_frame, text='No hotkeys yet', style='Muted.TLabel')
+		# Gather all tags from DB
+		try:
+			all_tags = self.db.all_tags()
+		except Exception:
+			# Fallback to tags present in hotkey mappings if DB fails
+			all_tags = sorted(set(self.hotkeys.values()))
+		# Ensure tags referenced by hotkey mappings are included even if not yet in DB
+		try:
+			if self.hotkeys:
+				all_tags = sorted(set(list(all_tags) + list(self.hotkeys.values())))
+		except Exception:
+			pass
+		if not all_tags:
+			lbl = ttk.Label(self.hotkey_list_frame, text='No tags yet', style='Muted.TLabel')
 			lbl.pack(anchor='w')
 			return
-		for k in sorted(self.hotkeys.keys()):
+		# Build reverse map: tag -> list of keys
+		tag_to_keys: Dict[str, List[str]] = {}
+		try:
+			for key, tag in (self.hotkeys or {}).items():
+				tag_to_keys.setdefault(str(tag), []).append(str(key))
+		except Exception:
+			pass
+		for tag_name in sorted(all_tags):
 			row = ttk.Frame(self.hotkey_list_frame, style='Side.TFrame')
 			row.pack(fill='x', pady=2)
 			var = tk.BooleanVar(value=False)
-			chk = ttk.Checkbutton(row, variable=var, style='HK.TCheckbutton', command=lambda key=k, v=var: self._toggle_sidebar_tag(key, v.get()))
+			# Toggle by tag name directly
+			chk = ttk.Checkbutton(row, variable=var, style='HK.TCheckbutton', command=lambda t=tag_name, v=var: self._toggle_sidebar_tag_by_name(t, v.get()))
 			chk.pack(side='left')
 			# Tag name bolded
-			tag_text = self.hotkeys.get(k, '')
-			tag_lbl = ttk.Label(row, text=tag_text)
+			tag_lbl = ttk.Label(row, text=tag_name)
 			tag_lbl.configure(font=self._font_bold)
 			tag_lbl.pack(side='left', padx=(6, 6))
-			# Key hint
-			key_lbl = ttk.Label(row, text=f"({k})", style='HKHint.TLabel')
-			key_lbl.pack(side='left')
-			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda key=k: self._remove_hotkey_mapping(key))
+			# Key hint only if mapped
+			keys = sorted(tag_to_keys.get(tag_name, []))
+			if keys:
+				key_hint = f"({', '.join(keys)})" if len(keys) > 1 else f"({keys[0]})"
+				key_lbl = ttk.Label(row, text=key_hint, style='HKHint.TLabel')
+				key_lbl.pack(side='left')
+			# Remove button (always available): removes the tag globally and unmaps keys
+			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda t=tag_name: self._remove_tag_globally(t))
 			btn.pack(side='right')
 
 	def _render_tagging_tags(self) -> None:
@@ -2309,6 +2345,11 @@ class KeyTaggerApp:
 	def _add_hotkey_mapping(self) -> None:
 		k = (self.hk_new_key_var.get() or '').strip().lower()
 		t = (self.hk_new_tag_var.get() or '').strip().lower()
+		# Ignore placeholder values
+		if k == self._hk_key_placeholder.lower():
+			k = ''
+		if t == self._hk_tag_placeholder.lower():
+			t = ''
 		if not k or not t:
 			messagebox.showerror('Hotkeys', 'Please enter both key and tag')
 			return
@@ -2316,27 +2357,79 @@ class KeyTaggerApp:
 		save_hotkeys(self.hotkeys)
 		self.hk_new_key_var.set('')
 		self.hk_new_tag_var.set('')
+		# Restore placeholders
+		self._apply_placeholder_if_empty(self.hk_entry_key, self.hk_new_key_var, self._hk_key_placeholder)
+		self._apply_placeholder_if_empty(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
 		self._render_hotkey_list()
 		messagebox.showinfo('Hotkeys', f"Added mapping {k} -> {t}")
+
+	def _install_entry_placeholder(self, entry: Optional[tk.Entry], var: tk.StringVar, placeholder: str) -> None:
+		if entry is None:
+			return
+		def set_placeholder() -> None:
+			val = var.get()
+			if not val:
+				try:
+					var.set(placeholder)
+					entry.configure(fg=self.palette.get('muted', '#6b7280'))
+					entry._is_placeholder = True  # type: ignore[attr-defined]
+				except Exception:
+					pass
+		def clear_placeholder() -> None:
+			try:
+				if getattr(entry, '_is_placeholder', False):  # type: ignore[attr-defined]
+					var.set('')
+					# Use solid black for typed text for readability
+					entry.configure(fg='#000000')
+					entry._is_placeholder = False  # type: ignore[attr-defined]
+			except Exception:
+				pass
+		def on_focus_in(event: tk.Event) -> None:
+			clear_placeholder()
+		def on_focus_out(event: tk.Event) -> None:
+			if not (var.get() or '').strip():
+				set_placeholder()
+		def on_key_release(event: tk.Event) -> None:
+			# If user starts typing while placeholder, switch to normal
+			try:
+				if getattr(entry, '_is_placeholder', False):  # type: ignore[attr-defined]
+					entry.configure(fg='#000000')
+					entry._is_placeholder = False  # type: ignore[attr-defined]
+			except Exception:
+				pass
+		# Initialize
+		try:
+			entry.configure(fg=self.palette.get('muted', '#6b7280'))
+		except Exception:
+			pass
+		set_placeholder()
+		entry.bind('<FocusIn>', on_focus_in)
+		entry.bind('<FocusOut>', on_focus_out)
+		entry.bind('<KeyRelease>', on_key_release)
+
+	def _apply_placeholder_if_empty(self, entry: Optional[tk.Entry], var: tk.StringVar, placeholder: str) -> None:
+		if entry is None:
+			return
+		if not (var.get() or '').strip():
+			try:
+				var.set('')
+				# Re-install will apply placeholder text and color
+				self._install_entry_placeholder(entry, var, placeholder)
+			except Exception:
+				pass
+
+	def _refresh_hotkey_placeholders(self) -> None:
+		# Update placeholder colors according to current theme
+		try:
+			self._apply_placeholder_if_empty(self.hk_entry_key, self.hk_new_key_var, self._hk_key_placeholder)
+			self._apply_placeholder_if_empty(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
+		except Exception:
+			pass
 
 	def _remove_hotkey_mapping(self, key: str) -> None:
 		tag_to_remove = self.hotkeys.get(key)
 		self.hotkeys.pop(key, None)
 		save_hotkeys(self.hotkeys)
-		# Offer to remove tag globally if it is now unmapped
-		try:
-			still_mapped = tag_to_remove in set(self.hotkeys.values()) if tag_to_remove else False
-		except Exception:
-			still_mapped = False
-		if tag_to_remove and not still_mapped:
-			ans = messagebox.askyesno('Remove Tag Globally?', f"Also remove tag '{tag_to_remove}' from all items?")
-			if ans:
-				try:
-					removed = self.db.remove_tag_globally(tag_to_remove)
-					messagebox.showinfo('Tags', f"Removed '{tag_to_remove}' from {removed} item(s)")
-					self.refresh_records()
-				except Exception:
-					pass
 		self._render_hotkey_list()
 
 	def _toggle_sidebar_tag(self, key: str, checked: bool) -> None:
@@ -2356,6 +2449,120 @@ class KeyTaggerApp:
 				except Exception:
 					pass
 			self.refresh_records(preserve_selection=True)
+
+	def _toggle_sidebar_tag_by_name(self, tag: str, checked: bool) -> None:
+		# Toggle applying/removing a tag (by name) to current selection
+		if not tag:
+			return
+		if checked:
+			self.apply_tag_to_selection(tag)
+		else:
+			if not self.selected_ids:
+				return
+			for mid in list(self.selected_ids):
+				try:
+					self.db.remove_media_tags(int(mid), [tag])
+				except Exception:
+					pass
+			self.refresh_records(preserve_selection=True)
+
+	def _remove_tag_globally(self, tag_name: str) -> None:
+		if not tag_name:
+			return
+		# Check preference; show confirm dialog unless suppressed
+		if not self._should_skip_remove_tag_confirm():
+			ans, dont_show = self._confirm_remove_tag_dialog(tag_name)
+			if dont_show:
+				self._set_skip_remove_tag_confirm(True)
+			if not ans:
+				return
+		# Remove tag across DB
+		try:
+			removed = self.db.remove_tag_globally(tag_name)
+		except Exception:
+			removed = 0
+		# Unmap any hotkeys pointing to this tag
+		try:
+			keys_to_remove = [k for k, v in (self.hotkeys or {}).items() if v == tag_name]
+			for k in keys_to_remove:
+				self.hotkeys.pop(k, None)
+			save_hotkeys(self.hotkeys)
+		except Exception:
+			pass
+		# Refresh UI
+		try:
+			self.refresh_records()
+		except Exception:
+			pass
+		self._render_hotkey_list()
+		try:
+			messagebox.showinfo('Tags', f"Removed '{tag_name}' from {removed} item(s)")
+		except Exception:
+			pass
+
+	def _should_skip_remove_tag_confirm(self) -> bool:
+		try:
+			cfg = load_config()
+			return bool(cfg.get('skip_remove_tag_confirm'))
+		except Exception:
+			return False
+
+	def _set_skip_remove_tag_confirm(self, skip: bool) -> None:
+		try:
+			cfg = load_config()
+			cfg['skip_remove_tag_confirm'] = bool(skip)
+			save_config(cfg)
+		except Exception:
+			pass
+
+	def _confirm_remove_tag_dialog(self, tag_name: str) -> Tuple[bool, bool]:
+		# Returns (confirmed, dont_show_again)
+		try:
+			dlg = tk.Toplevel(self.root)
+			dlg.title('Remove Tag Globally?')
+			dlg.transient(self.root)
+			dlg.grab_set()
+			try:
+				dlg.attributes('-topmost', True)
+			except Exception:
+				pass
+			frm = ttk.Frame(dlg, padding=12)
+			frm.pack(fill='both', expand=True)
+			msg = ttk.Label(frm, text=f"Remove tag '{tag_name}' from all items and unmap any hotkeys?")
+			msg.pack(anchor='w')
+			dont_var = tk.BooleanVar(value=False)
+			chk = ttk.Checkbutton(frm, text="Don't show this again", variable=dont_var)
+			chk.pack(anchor='w', pady=(8, 0))
+			btns = ttk.Frame(frm)
+			btns.pack(fill='x', pady=(12, 0))
+			result = {'ok': False}
+			def _ok() -> None:
+				result['ok'] = True
+				dlg.destroy()
+			def _cancel() -> None:
+				result['ok'] = False
+				dlg.destroy()
+			btn_ok = ttk.Button(btns, text='Remove', style='Primary.TButton', command=_ok)
+			btn_ok.pack(side='right')
+			btn_cancel = ttk.Button(btns, text='Cancel', style='Small.TButton', command=_cancel)
+			btn_cancel.pack(side='right', padx=(0, 8))
+			# Center over root
+			try:
+				dlg.update_idletasks()
+				rx = int(self.root.winfo_rootx()); ry = int(self.root.winfo_rooty())
+				rw = int(self.root.winfo_width()); rh = int(self.root.winfo_height())
+				dw = int(dlg.winfo_reqwidth()); dh = int(dlg.winfo_reqheight())
+				x = rx + max(0, (rw - dw) // 2)
+				y = ry + max(0, (rh - dh) // 2)
+				dlg.geometry(f"{dw}x{dh}+{x}+{y}")
+			except Exception:
+				pass
+			dlg.wait_window()
+			return bool(result['ok']), bool(dont_var.get())
+		except Exception:
+			# Fallback to standard dialog without checkbox
+			ok = messagebox.askyesno('Remove Tag Globally?', f"Remove tag '{tag_name}' from all items and unmap any hotkeys?")
+			return bool(ok), False
 
 	def toggle_select(self, media_id: int) -> None:
 		if media_id in self.selected_ids:
@@ -2665,6 +2872,11 @@ class KeyTaggerApp:
 				pass
 		# Immediately refresh the grid so tag changes are visible; preserve selection
 		self.refresh_records(preserve_selection=True)
+		# Refresh sidebar tag list
+		try:
+			self._render_hotkey_list()
+		except Exception:
+			pass
 		if changed_add and not changed_remove:
 			self._show_toast(f"Added '{tag}' to {changed_add} item(s)")
 		elif changed_remove and not changed_add:
