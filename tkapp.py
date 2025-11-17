@@ -473,9 +473,29 @@ class KeyTaggerApp:
 		row_add = ttk.Frame(self.tags_tab_frame, style='Side.TFrame')
 		row_add.pack(fill='x', pady=(0, 6))
 		# Use tk.Entry here to support placeholder text color
-		self.hk_entry_key = tk.Entry(row_add, textvariable=self.hk_new_key_var, width=8)
+		hotkey_entry_bg = '#111827' if self.dark_mode else '#ffffff'
+		hotkey_entry_fg = '#f3f4f6' if self.dark_mode else '#111827'
+		self.hk_entry_key = tk.Entry(
+			row_add,
+			textvariable=self.hk_new_key_var,
+			width=8,
+			bg=hotkey_entry_bg,
+			fg=hotkey_entry_fg,
+			insertbackground=hotkey_entry_fg,
+			relief='solid',
+			bd=1,
+		)
 		self.hk_entry_key.pack(side='left')
-		self.hk_entry_tag = tk.Entry(row_add, textvariable=self.hk_new_tag_var, width=16)
+		self.hk_entry_tag = tk.Entry(
+			row_add,
+			textvariable=self.hk_new_tag_var,
+			width=16,
+			bg=hotkey_entry_bg,
+			fg=hotkey_entry_fg,
+			insertbackground=hotkey_entry_fg,
+			relief='solid',
+			bd=1,
+		)
 		self.hk_entry_tag.pack(side='left', padx=(6, 6))
 		self._install_entry_placeholder(self.hk_entry_key, self.hk_new_key_var, self._hk_key_placeholder)
 		self._install_entry_placeholder(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
@@ -560,7 +580,15 @@ class KeyTaggerApp:
 		self.video_controls.columnconfigure(1, weight=1)
 		self.video_play_btn = ttk.Button(self.video_controls, text='Pause', command=self._toggle_video_play, style='Small.TButton')
 		self.video_play_btn.grid(row=0, column=0, padx=(0, 8))
-		self.video_seek = ttk.Scale(self.video_controls, orient='horizontal', from_=0.0, to=1.0, variable=self._video_pos_var, command=self._on_video_seek)
+		self.video_seek = ttk.Scale(
+			self.video_controls,
+			orient='horizontal',
+			from_=0.0,
+			to=1.0,
+			variable=self._video_pos_var,
+			command=self._on_video_seek,
+			style='Horizontal.Video.TScale',
+		)
 		self.video_seek.grid(row=0, column=1, sticky='ew')
 		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='ViewerMuted.TLabel')
 		self.video_time_lbl.grid(row=0, column=2, padx=(8, 0))
@@ -751,6 +779,72 @@ class KeyTaggerApp:
 		style.configure('TLabel', background=self.palette['side_bg'], foreground=self.palette['text'])
 		style.configure('Muted.TLabel', background=self.palette['side_bg'], foreground=self.palette['muted'])
 		style.configure('Title.TLabel', background=self.palette['side_bg'], foreground=self.palette['text'], font=title_font)
+
+		# Entry (textbox) styles - darker in dark mode so white boxes aren't jarring
+		if self.dark_mode:
+			entry_bg = '#111827'
+			entry_fg = self.palette['text']
+			style.configure(
+				'TEntry',
+				fieldbackground=entry_bg,
+				foreground=entry_fg,
+				background=entry_bg,
+				bordercolor='#4b5563',
+				lightcolor='#4b5563',
+				darkcolor=entry_bg,
+				insertcolor=entry_fg,
+			)
+
+		# Scrollbar and scale styles - darker track/thumb in dark mode
+		if self.dark_mode:
+			scroll_trough = '#020617'
+			scroll_thumb = '#1f2937'
+			scroll_thumb_active = '#374151'
+			style.configure(
+				'Vertical.TScrollbar',
+				troughcolor=scroll_trough,
+				background=scroll_thumb,
+				bordercolor=scroll_trough,
+				arrowcolor='#e5e7eb',
+				lightcolor=scroll_thumb,
+				darkcolor=scroll_thumb,
+			)
+			style.map(
+				'Vertical.TScrollbar',
+				background=[('active', scroll_thumb_active), ('pressed', scroll_thumb_active)],
+			)
+			style.configure(
+				'Horizontal.TScrollbar',
+				troughcolor=scroll_trough,
+				background=scroll_thumb,
+				bordercolor=scroll_trough,
+				arrowcolor='#e5e7eb',
+				lightcolor=scroll_thumb,
+				darkcolor=scroll_thumb,
+			)
+			style.map(
+				'Horizontal.TScrollbar',
+				background=[('active', scroll_thumb_active), ('pressed', scroll_thumb_active)],
+			)
+
+			# Video seek bar (scale) styling to match dark scrollbars
+			try:
+				# Ensure the custom scale style has a layout by cloning the horizontal scale
+				style.layout('Horizontal.Video.TScale', style.layout('Horizontal.TScale'))
+			except Exception:
+				pass
+			style.configure(
+				'Horizontal.Video.TScale',
+				troughcolor=scroll_trough,
+				background=scroll_thumb,
+				bordercolor=scroll_trough,
+				lightcolor=scroll_thumb,
+				darkcolor=scroll_thumb,
+			)
+			style.map(
+				'Horizontal.Video.TScale',
+				background=[('active', scroll_thumb_active), ('pressed', scroll_thumb_active)],
+			)
 
 		# Buttons
 		style.configure('TButton', padding=(10, 6))
@@ -3511,8 +3605,9 @@ class KeyTaggerApp:
 			try:
 				if getattr(entry, '_is_placeholder', False):  # type: ignore[attr-defined]
 					var.set('')
-					# Use solid black for typed text for readability
-					entry.configure(fg='#000000')
+					# Use theme text color for typed text (handles dark/light modes)
+					text_color = self.palette.get('text', '#111827')
+					entry.configure(fg=text_color)
 					entry._is_placeholder = False  # type: ignore[attr-defined]
 			except Exception:
 				pass
@@ -3525,7 +3620,8 @@ class KeyTaggerApp:
 			# If user starts typing while placeholder, switch to normal
 			try:
 				if getattr(entry, '_is_placeholder', False):  # type: ignore[attr-defined]
-					entry.configure(fg='#000000')
+					text_color = self.palette.get('text', '#111827')
+					entry.configure(fg=text_color)
 					entry._is_placeholder = False  # type: ignore[attr-defined]
 			except Exception:
 				pass
