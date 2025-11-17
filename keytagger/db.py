@@ -384,3 +384,14 @@ class Database:
                 (media_id,),
             ).fetchall()
             return [r[0] for r in rows]
+
+    def delete_media(self, file_path: str) -> bool:
+        """Delete media record from database by file path.
+        
+        Returns True if a record was deleted, False otherwise.
+        """
+        with self.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM media WHERE file_path = ?", (file_path,))
+            conn.commit()
+            return cur.rowcount > 0

@@ -135,23 +135,52 @@ def build_square_thumbnail(src_path: str, size: int = THUMB_SIZE) -> Optional[st
 
 
 def create_rounded_rectangle(canvas, x1, y1, x2, y2, radius=10, **kwargs):
-	"""Create a rounded rectangle on a canvas."""
-	points = []
+	"""Create a smooth rounded rectangle on a canvas using arcs and rectangles."""
+	# Ensure radius doesn't exceed half the width or height
+	radius = min(radius, abs(x2 - x1) / 2, abs(y2 - y1) / 2)
+	
+	# Extract fill and outline colors
+	fill_color = kwargs.pop('fill', '')
+	outline_color = kwargs.pop('outline', '')
+	tags = kwargs.pop('tags', '')
+	
+	# Create the rounded rectangle using arcs and rectangles for smooth edges
+	# Top rectangle
+	if y1 + radius < y2 - radius:
+		canvas.create_rectangle(x1 + radius, y1, x2 - radius, y1 + radius, 
+			fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	# Bottom rectangle
+	if y1 + radius < y2 - radius:
+		canvas.create_rectangle(x1 + radius, y2 - radius, x2 - radius, y2, 
+			fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	# Left rectangle
+	if x1 + radius < x2 - radius:
+		canvas.create_rectangle(x1, y1 + radius, x1 + radius, y2 - radius, 
+			fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	# Right rectangle
+	if x1 + radius < x2 - radius:
+		canvas.create_rectangle(x2 - radius, y1 + radius, x2, y2 - radius, 
+			fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	# Center rectangle
+	canvas.create_rectangle(x1 + radius, y1 + radius, x2 - radius, y2 - radius, 
+		fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	
+	# Draw rounded corners using arcs (smooth curves)
 	# Top-left corner
-	points.extend([x1 + radius, y1])
-	points.extend([x2 - radius, y1])
+	canvas.create_arc(x1, y1, x1 + 2*radius, y1 + 2*radius, 
+		start=90, extent=90, fill=fill_color, outline=outline_color, tags=tags, **kwargs)
 	# Top-right corner
-	points.extend([x2, y1 + radius])
-	points.extend([x2, y2 - radius])
+	canvas.create_arc(x2 - 2*radius, y1, x2, y1 + 2*radius, 
+		start=0, extent=90, fill=fill_color, outline=outline_color, tags=tags, **kwargs)
 	# Bottom-right corner
-	points.extend([x2 - radius, y2])
-	points.extend([x1 + radius, y2])
+	canvas.create_arc(x2 - 2*radius, y2 - 2*radius, x2, y2, 
+		start=270, extent=90, fill=fill_color, outline=outline_color, tags=tags, **kwargs)
 	# Bottom-left corner
-	points.extend([x1, y2 - radius])
-	points.extend([x1, y1 + radius])
-	# Close the shape
-	points.extend([x1 + radius, y1])
-	return canvas.create_polygon(points, smooth=True, **kwargs)
+	canvas.create_arc(x1, y2 - 2*radius, x1 + 2*radius, y2, 
+		start=180, extent=90, fill=fill_color, outline=outline_color, tags=tags, **kwargs)
+	
+	# Return a list of created items (for potential cleanup)
+	return []
 
 
 def build_audio_placeholder(size: int = THUMB_SIZE) -> Optional[str]:
@@ -459,6 +488,12 @@ class KeyTaggerApp:
 		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='Muted.TLabel')
 		self.video_time_lbl.grid(row=0, column=2, padx=(8, 0))
 		self.video_controls.grid_remove()
+		# GIF controls (hidden unless an animated GIF is selected)
+		self.gif_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
+		self.gif_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.gif_play_btn = ttk.Button(self.gif_controls, text='Play', command=self._toggle_gif_play, style='Small.TButton')
+		self.gif_play_btn.grid(row=0, column=0, padx=(0, 8))
+		self.gif_controls.grid_remove()
 		# Audio controls (no autoplay). Simple play/pause button
 		self.audio_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
 		self.audio_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
@@ -851,6 +886,7 @@ class KeyTaggerApp:
 		self.root.bind('<Control-KeyPress>', self.on_ctrl_key)
 		self.root.bind('<Left>', self.on_arrow_left)
 		self.root.bind('<Right>', self.on_arrow_right)
+		self.root.bind('<Delete>', self.on_delete_key)
 
 	def pick_folder(self) -> None:
 		path = filedialog.askdirectory(initialdir=self.folder_var.get() or os.path.abspath('.'))
@@ -1260,6 +1296,7 @@ class KeyTaggerApp:
 		# Hide controls by default
 		try:
 			self.video_controls.grid_remove()
+			self.gif_controls.grid_remove()
 			self.audio_controls.grid_remove()
 		except Exception:
 			pass
@@ -1283,6 +1320,22 @@ class KeyTaggerApp:
 			avail_w, avail_h = 1000, 700
 		# Branch by media type
 		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			# Check if this is an animated GIF
+			is_animated_gif = False
+			try:
+				with Image.open(rec.file_path) as test_im:
+					is_animated_gif = bool(getattr(test_im, 'is_animated', False)) and int(getattr(test_im, 'n_frames', 1) or 1) > 1
+			except Exception:
+				pass
+			
+			# Show GIF controls for animated GIFs (only when media changed)
+			if is_animated_gif and changed:
+				try:
+					self.gif_controls.grid()
+					self.gif_play_btn.configure(text='Play')
+				except Exception:
+					pass
+			
 			try:
 				with Image.open(rec.file_path) as im:
 					im = im.convert('RGB')
@@ -1354,6 +1407,7 @@ class KeyTaggerApp:
 				self.audio_controls.grid()
 				self.audio_play_btn.configure(text='Play Audio')
 				self.video_controls.grid_remove()
+				self.gif_controls.grid_remove()
 			except Exception:
 				pass
 			path = build_audio_placeholder(size=max(480, int(self._thumb_px) * 2))
@@ -1549,6 +1603,22 @@ class KeyTaggerApp:
 			avail_w, avail_h = 800, 500
 		# Images: render full resolution scaled, not thumbnails
 		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
+			# Check if this is an animated GIF
+			is_animated_gif = False
+			try:
+				with Image.open(rec.file_path) as test_im:
+					is_animated_gif = bool(getattr(test_im, 'is_animated', False)) and int(getattr(test_im, 'n_frames', 1) or 1) > 1
+			except Exception:
+				pass
+			
+			# Show GIF controls for animated GIFs (only when media changed)
+			if is_animated_gif and changed:
+				try:
+					self.gif_controls.grid()
+					self.gif_play_btn.configure(text='Play')
+				except Exception:
+					pass
+			
 			# Show static first frame (no autoplay for GIFs)
 			try:
 				with Image.open(rec.file_path) as im:
@@ -1646,9 +1716,10 @@ class KeyTaggerApp:
 					self._video_pos_var.set(0.0)
 					self._video_updating_slider = False
 					self.video_time_lbl.configure(text=f"00:00 / {self._format_time(self._video_duration_s)}")
-					# Hide audio controls while video is active
+					# Hide audio and GIF controls while video is active
 					try:
 						self.audio_controls.grid_remove()
+						self.gif_controls.grid_remove()
 					except Exception:
 						pass
 					# Show open button
@@ -1666,8 +1737,9 @@ class KeyTaggerApp:
 				try:
 					self.audio_controls.grid()
 					self.audio_play_btn.configure(text='Play Audio')
-					# Ensure video controls are hidden for audio files
+					# Ensure video and GIF controls are hidden for audio files
 					self.video_controls.grid_remove()
+					self.gif_controls.grid_remove()
 					# Show open button
 					try:
 						self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
@@ -1735,15 +1807,19 @@ class KeyTaggerApp:
 			self._video_duration_s = 0.0
 			self._video_current_frame = 0
 			self._video_seek_to_frame = None
-			# Hide controls
-			try:
-				self.video_controls.grid_remove()
-			except Exception:
-				pass
-			try:
-				self.audio_controls.grid_remove()
-			except Exception:
-				pass
+		# Hide controls
+		try:
+			self.video_controls.grid_remove()
+		except Exception:
+			pass
+		try:
+			self.gif_controls.grid_remove()
+		except Exception:
+			pass
+		try:
+			self.audio_controls.grid_remove()
+		except Exception:
+			pass
 		# Stop GIF thread if running
 		try:
 			if self._gif_stop_event is not None:
@@ -1871,12 +1947,14 @@ class KeyTaggerApp:
 							self.root.after(0, self._set_viewer_photo_if_current, photo, session)
 							# Frame delay
 							delay_ms = int(im.info.get('duration', 100) or 100)
-							# Pause loop
+							# Pause loop - when paused, don't advance frames
 							end_time = time.time() + max(0.001, delay_ms / 1000.0)
 							while time.time() < end_time:
 								if stop_event.is_set():
 									break
 								if self._gif_pause:
+									# Extend end time while paused so frame doesn't advance
+									end_time = time.time() + max(0.001, delay_ms / 1000.0)
 									time.sleep(0.02)
 									continue
 								time.sleep(0.005)
@@ -1951,9 +2029,10 @@ class KeyTaggerApp:
 			# Initialize clock for A/V sync
 			self._video_clock_offset = 0.0
 			self._video_clock_start = time.monotonic()
-			# Hide audio controls while video is active
+			# Hide audio and GIF controls while video is active
 			try:
 				self.audio_controls.grid_remove()
+				self.gif_controls.grid_remove()
 			except Exception:
 				pass
 		except Exception:
@@ -2145,6 +2224,34 @@ class KeyTaggerApp:
 				self._video_clock_offset = float(pos_sec)
 				self._video_clock_start = time.monotonic()
 				self._restart_video_audio(pos_sec, int(self._viewer_session))
+		except Exception:
+			pass
+
+	def _toggle_gif_play(self) -> None:
+		try:
+			# If no GIF is currently playing, start playback for the selected GIF
+			if not self._is_gif_playing():
+				rec = self._find_record_by_id(self.current_view_id)
+				if rec and str(getattr(rec, 'media_type', '')).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
+					# Verify it's an animated GIF
+					try:
+						with Image.open(rec.file_path) as test_im:
+							is_animated = bool(getattr(test_im, 'is_animated', False)) and int(getattr(test_im, 'n_frames', 1) or 1) > 1
+							if not is_animated:
+								return
+					except Exception:
+						return
+					# Increment session to keep playback consistent
+					try:
+						self._viewer_session += 1
+					except Exception:
+						self._viewer_session = int(self._viewer_session) + 1 if isinstance(self._viewer_session, int) else 1
+					self._start_gif_playback(rec.file_path, int(self._viewer_session))
+					self.gif_play_btn.configure(text='Pause')
+					return
+			# Toggle pause state
+			self._gif_pause = not self._gif_pause
+			self.gif_play_btn.configure(text=('Play' if self._gif_pause else 'Pause'))
 		except Exception:
 			pass
 
@@ -3000,6 +3107,73 @@ class KeyTaggerApp:
 			self._navigate(1)
 			if self.tagging_mode:
 				self._update_tagging_image()
+
+	def on_delete_key(self, event: tk.Event) -> None:
+		# Prevent deletion when typing in entry fields
+		if isinstance(event.widget, tk.Entry):
+			return
+		
+		# Determine which files to delete
+		files_to_delete = []
+		if self.view_mode or self.tagging_mode:
+			# In view/tagging mode, delete the currently viewed file
+			rec = self._find_record_by_id(self.current_view_id)
+			if rec and rec.file_path and os.path.exists(rec.file_path):
+				files_to_delete.append((rec.id, rec.file_path, rec.file_name))
+		else:
+			# In gallery mode, delete all selected files
+			for rid in self.selected_ids:
+				rec = self._find_record_by_id(rid)
+				if rec and rec.file_path and os.path.exists(rec.file_path):
+					files_to_delete.append((rec.id, rec.file_path, rec.file_name))
+		
+		if not files_to_delete:
+			return
+		
+		# Show confirmation dialog
+		if len(files_to_delete) == 1:
+			msg = f'Are you sure you want to delete this file?\n\n{files_to_delete[0][2]}'
+		else:
+			msg = f'Are you sure you want to delete {len(files_to_delete)} files?'
+		
+		if not messagebox.askyesno('Confirm Delete', msg):
+			return
+		
+		# Delete files and remove from database
+		deleted_ids = []
+		for rid, file_path, file_name in files_to_delete:
+			try:
+				os.remove(file_path)
+				self.db.delete_media(file_path)
+				deleted_ids.append(rid)
+			except Exception as e:
+				messagebox.showerror('Delete Error', f'Failed to delete {file_name}:\n{str(e)}')
+		
+		# If in view/tagging mode and current file was deleted, navigate away
+		if (self.view_mode or self.tagging_mode) and self.current_view_id in deleted_ids:
+			# Try to navigate to next file, or previous if at end
+			old_idx = None
+			for i, rec in enumerate(self.records):
+				if rec.id == self.current_view_id:
+					old_idx = i
+					break
+			
+			if old_idx is not None:
+				# Navigate to next file if available, otherwise previous
+				if old_idx + 1 < len(self.records):
+					self._navigate(1)
+				elif old_idx > 0:
+					self._navigate(-1)
+				else:
+					# No more files, exit view mode
+					self.current_view_id = None
+					if self.view_mode:
+						self.exit_view_mode()
+					if self.tagging_mode:
+						self.exit_tagging_mode()
+		
+		# Refresh records to update the gallery
+		self.refresh_records(preserve_selection=False)
 
 	def on_ctrl_key(self, event: tk.Event) -> None:
 		k = (event.keysym or '').lower()
