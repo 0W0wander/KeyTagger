@@ -42,6 +42,44 @@ def get_tag_color(tag_name: str, alpha: float = 0.6) -> str:
 	return f'#{r:02x}{g:02x}{b:02x}'
 
 
+def get_contrasting_text_color(bg_color: str) -> str:
+	"""Get black or white text color based on background brightness."""
+	# Remove # if present
+	hex_color = bg_color.lstrip('#')
+	
+	# Convert to RGB
+	r = int(hex_color[0:2], 16)
+	g = int(hex_color[2:4], 16)
+	b = int(hex_color[4:6], 16)
+	
+	# Calculate relative luminance (perceived brightness)
+	# Using the formula: (0.299*R + 0.587*G + 0.114*B)
+	luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+	
+	# Return black for bright backgrounds, white for dark backgrounds
+	# Threshold at 186 (mid-point considering the color range 100-255)
+	return '#000000' if luminance > 186 else '#ffffff'
+
+
+def darken_color(color: str, factor: float = 0.4) -> str:
+	"""Darken a hex color by reducing RGB values by a factor (0.0 to 1.0)."""
+	# Remove # if present
+	hex_color = color.lstrip('#')
+	
+	# Convert to RGB
+	r = int(hex_color[0:2], 16)
+	g = int(hex_color[2:4], 16)
+	b = int(hex_color[4:6], 16)
+	
+	# Darken by multiplying by (1 - factor)
+	r = int(r * (1 - factor))
+	g = int(g * (1 - factor))
+	b = int(b * (1 - factor))
+	
+	# Return hex color
+	return f'#{r:02x}{g:02x}{b:02x}'
+
+
 def load_config() -> Dict:
 	try:
 		with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -1212,14 +1250,34 @@ class KeyTaggerApp:
 					canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
 					canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
 					
-					# Draw text (shifted left to make room for X)
-					text_color = '#ffffff' if self.dark_mode else '#000000'
-					canvas.create_text((badge_width - x_button_width)//2, badge_height//2, text=t.upper(), fill=text_color, font=font, tags='text')
+					# Draw text with thick darker border (shifted left to make room for X)
+					text_x = (badge_width - x_button_width)//2
+					text_y = badge_height//2
 					
-					# Create visible X button
+					# Draw thick border using darkened version of tag color
+					border_color = darken_color(tag_color, factor=0.5)
+					border_width = 2
+					for dx in range(-border_width, border_width + 1):
+						for dy in range(-border_width, border_width + 1):
+							if dx != 0 or dy != 0:
+								canvas.create_text(text_x + dx, text_y + dy, text=t.upper(), fill=border_color, font=font, tags='text_border')
+					
+					# Draw white text on top
+					canvas.create_text(text_x, text_y, text=t.upper(), fill='#ffffff', font=font, tags='text')
+					
+					# Create visible X button with darker border
 					x_center_x = badge_width - x_button_width//2
 					x_center_y = badge_height//2
-					canvas.create_text(x_center_x, x_center_y, text='×', fill=text_color, font=('Segoe UI', 14, 'bold'), tags='x_button')
+					x_font = ('Segoe UI', 14, 'bold')
+					
+					# Draw thick border for X button using same darkened color
+					for dx in range(-border_width, border_width + 1):
+						for dy in range(-border_width, border_width + 1):
+							if dx != 0 or dy != 0:
+								canvas.create_text(x_center_x + dx, x_center_y + dy, text='×', fill=border_color, font=x_font, tags='x_button_border')
+					
+					# Draw white X on top
+					canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=x_font, tags='x_button')
 					
 					# Click handler to remove tag (only on X button)
 					def on_x_click(event, tag_name=t, media_id=rec.id):
@@ -1237,10 +1295,13 @@ class KeyTaggerApp:
 					def on_x_leave(event, c=canvas):
 						c.config(cursor='')
 					
-					# Bind click only to the X button
+					# Bind click to both the X button and its border
 					canvas.tag_bind('x_button', '<Button-1>', on_x_click)
+					canvas.tag_bind('x_button_border', '<Button-1>', on_x_click)
 					canvas.tag_bind('x_button', '<Enter>', on_x_enter)
+					canvas.tag_bind('x_button_border', '<Enter>', on_x_enter)
 					canvas.tag_bind('x_button', '<Leave>', on_x_leave)
+					canvas.tag_bind('x_button_border', '<Leave>', on_x_leave)
 
 			self._update_card_style(frame, rec.id)
 
@@ -2892,13 +2953,34 @@ class KeyTaggerApp:
 			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
 			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
 			
-			# Draw text (shifted left to make room for X)
-			canvas.create_text((badge_width - x_button_width)//2, badge_height//2, text=t.upper(), fill='#ffffff', font=font, tags='text')
+			# Draw text with thick darker border (shifted left to make room for X)
+			text_x = (badge_width - x_button_width)//2
+			text_y = badge_height//2
 			
-			# Create visible X button (always shown now)
+			# Draw thick border using darkened version of tag color
+			border_color = darken_color(tag_color, factor=0.5)
+			border_width = 2
+			for dx in range(-border_width, border_width + 1):
+				for dy in range(-border_width, border_width + 1):
+					if dx != 0 or dy != 0:
+						canvas.create_text(text_x + dx, text_y + dy, text=t.upper(), fill=border_color, font=font, tags='text_border')
+			
+			# Draw white text on top
+			canvas.create_text(text_x, text_y, text=t.upper(), fill='#ffffff', font=font, tags='text')
+			
+			# Create visible X button with darker border (always shown now)
 			x_center_x = badge_width - x_button_width//2
 			x_center_y = badge_height//2
-			canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=('Segoe UI', 18, 'bold'), tags='x_button')
+			x_font = ('Segoe UI', 18, 'bold')
+			
+			# Draw thick border for X button using same darkened color
+			for dx in range(-border_width, border_width + 1):
+				for dy in range(-border_width, border_width + 1):
+					if dx != 0 or dy != 0:
+						canvas.create_text(x_center_x + dx, x_center_y + dy, text='×', fill=border_color, font=x_font, tags='x_button_border')
+			
+			# Draw white X on top
+			canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=x_font, tags='x_button')
 			
 			# Click handler to remove tag (only on X button)
 			def on_x_click(event, tag_name=t, c=canvas):
@@ -2919,10 +3001,13 @@ class KeyTaggerApp:
 			def on_x_leave(event, c=canvas):
 				c.config(cursor='')
 			
-			# Bind click only to the X button
+			# Bind click to both the X button and its border
 			canvas.tag_bind('x_button', '<Button-1>', on_x_click)
+			canvas.tag_bind('x_button_border', '<Button-1>', on_x_click)
 			canvas.tag_bind('x_button', '<Enter>', on_x_enter)
+			canvas.tag_bind('x_button_border', '<Enter>', on_x_enter)
 			canvas.tag_bind('x_button', '<Leave>', on_x_leave)
+			canvas.tag_bind('x_button_border', '<Leave>', on_x_leave)
 		
 		# Force layout update to ensure proper height calculation
 		try:
