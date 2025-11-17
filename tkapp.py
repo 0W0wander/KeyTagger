@@ -277,6 +277,8 @@ class KeyTaggerApp:
 		self._viewer_session: int = 0
 		# Debounce id for gallery resize in viewing mode
 		self._gallery_resize_after_id: Optional[str] = None
+		# Debounce id for viewer container resize in tagging mode
+		self._viewer_resize_after_id: Optional[str] = None
 		# Track last canvas width to avoid redundant relayouts
 		self._last_canvas_width: Optional[int] = None
 		# Freeze gallery height in viewing mode to prevent thrash
@@ -462,57 +464,82 @@ class KeyTaggerApp:
 		self.scroll_x.grid_remove()
 		self.canvas.bind('<Configure>', self._on_canvas_configure)
 
-		# Bottom viewer area (hidden until viewing mode)
-		self.viewer_container = ttk.Frame(self.root, style='App.TFrame')
+		# Bottom viewer area (hidden until viewing mode) - with dark background for tagging mode
+		self.viewer_container = ttk.Frame(self.root, style='Viewer.TFrame')
 		self.viewer_container.grid(row=1, column=1, sticky='nsew')
+		self.viewer_container.columnconfigure(0, weight=1)
 		self.root.rowconfigure(1, weight=0)
+		
+		# Tag list row (visible in tagging mode) - AT THE TOP
+		self.tagging_tags_frame = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
+		self.tagging_tags_frame.grid(row=0, column=0, sticky='ew', padx=16, pady=(16, 8))
+		self.tagging_tags_frame.grid_remove()
+		
 		# Frame to hold viewer label and open button overlay
 		self.viewer_image_frame = ttk.Frame(self.viewer_container)
-		self.viewer_image_frame.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+		self.viewer_image_frame.grid(row=1, column=0, sticky='nsew', padx=12, pady=8)
 		self.viewer_image_frame.columnconfigure(0, weight=1)
 		self.viewer_image_frame.rowconfigure(0, weight=1)
 		self.viewer_label = ttk.Label(self.viewer_image_frame)
-		self.viewer_label.grid(row=0, column=0, sticky='nsew')
+		self.viewer_label.grid(row=0, column=0)
 		# Button to open file in default application (positioned at top right)
 		self.viewer_open_btn = ttk.Button(self.viewer_image_frame, text='Open', command=self._open_current_file, style='Small.TButton')
 		self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
 		self.viewer_open_btn.place_forget()  # Hide initially
 		# Video controls (hidden unless a video is selected)
-		self.video_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.video_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.video_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
+		self.video_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.video_controls.columnconfigure(1, weight=1)
 		self.video_play_btn = ttk.Button(self.video_controls, text='Pause', command=self._toggle_video_play, style='Small.TButton')
 		self.video_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.video_seek = ttk.Scale(self.video_controls, orient='horizontal', from_=0.0, to=1.0, variable=self._video_pos_var, command=self._on_video_seek)
 		self.video_seek.grid(row=0, column=1, sticky='ew')
-		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='Muted.TLabel')
+		self.video_time_lbl = ttk.Label(self.video_controls, text='00:00 / 00:00', style='ViewerMuted.TLabel')
 		self.video_time_lbl.grid(row=0, column=2, padx=(8, 0))
 		self.video_controls.grid_remove()
 		# GIF controls (hidden unless an animated GIF is selected)
-		self.gif_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.gif_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.gif_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
+		self.gif_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.gif_play_btn = ttk.Button(self.gif_controls, text='Play', command=self._toggle_gif_play, style='Small.TButton')
 		self.gif_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.gif_controls.grid_remove()
 		# Audio controls (no autoplay). Simple play/pause button
-		self.audio_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.audio_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.audio_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
+		self.audio_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.audio_play_btn = ttk.Button(self.audio_controls, text='Play Audio', command=self._toggle_audio_play, style='Small.TButton')
 		self.audio_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.audio_controls.grid_remove()
-		# Tagging input row (only visible in tagging mode)
-		# Tag list row (visible in tagging mode)
-		self.tagging_tags_frame = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.tagging_tags_frame.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 6))
-		self.tagging_tags_frame.grid_remove()
-		# Tagging input row (only visible in tagging mode)
-		self.tagging_input_frame = ttk.Frame(self.viewer_container, style='App.TFrame')
-		self.tagging_input_frame.grid(row=3, column=0, sticky='ew', padx=12, pady=(0, 12))
-		self.tagging_input_frame.columnconfigure(1, weight=1)
-		lbl_tag = ttk.Label(self.tagging_input_frame, text='Add tag:', style='TLabel')
-		lbl_tag.grid(row=0, column=0, padx=(0, 8))
-		self.tagging_entry = ttk.Entry(self.tagging_input_frame, textvariable=self.tag_input_var)
-		self.tagging_entry.grid(row=0, column=1, sticky='ew')
+		
+		# Tagging input row (only visible in tagging mode) - AT THE BOTTOM
+		self.tagging_input_frame = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
+		self.tagging_input_frame.grid(row=3, column=0, sticky='ew', padx=16, pady=(8, 16))
+		self.tagging_input_frame.columnconfigure(0, weight=1)
+		# Modern sleek textbox with colors based on theme
+		entry_bg = '#1a202c' if self.dark_mode else '#ffffff'
+		entry_fg = '#f3f4f6' if self.dark_mode else '#111827'
+		entry_border = '#3b82f6' if self.dark_mode else '#2563eb'
+		entry_border_inactive = '#374151' if self.dark_mode else '#d1d5db'
+		self.tagging_entry = tk.Entry(
+			self.tagging_input_frame, 
+			textvariable=self.tag_input_var,
+			font=('Segoe UI', 13),
+			bg=entry_bg,
+			fg=entry_fg,
+			relief='flat',
+			highlightthickness=2,
+			highlightbackground=entry_border_inactive,
+			highlightcolor=entry_border,
+			insertbackground=entry_fg,
+			selectbackground=self.palette['primary'],
+			selectforeground='#ffffff'
+		)
+		self.tagging_entry.grid(row=0, column=0, sticky='ew', ipady=12)
+		# Add placeholder text
+		self._tagging_placeholder = 'Type a tag and press Enter...'
+		self._tagging_placeholder_active = False
+		self._set_tagging_placeholder()
+		self.tagging_entry.bind('<FocusIn>', self._on_tagging_focus_in)
+		self.tagging_entry.bind('<FocusOut>', self._on_tagging_focus_out)
 		self.tagging_entry.bind('<Return>', self._on_tagging_return)
 		# Intercept navigation hotkeys while the entry has focus so they don't insert characters
 		self.tagging_entry.bind('<Key>', self._on_tagging_entry_key)
@@ -526,6 +553,8 @@ class KeyTaggerApp:
 		self.tagging_entry.bind('<Right>', lambda e: self._on_tagging_entry_nav('right'))
 		self.tagging_input_frame.grid_remove()
 		self.viewer_container.grid_remove()
+		# Bind viewer container resize to update tagging mode images
+		self.viewer_container.bind('<Configure>', self._on_viewer_container_resize)
 
 		# Enable mouse-wheel scrolling globally so it works over all child widgets
 		self._activate_mousewheel()
@@ -686,6 +715,20 @@ class KeyTaggerApp:
 		# Cards and tags
 		style.configure('Card.TFrame', background=self.palette['card_bg'])
 		style.configure('Tag.TLabel', background=self.palette['tag_bg'], foreground=self.palette['tag_fg'], padding=(6, 2))
+		
+		# Modern large tag badges for tagging mode
+		tag_font = tkfont.Font(family='Segoe UI', size=13, weight='bold')
+		style.configure('TagBadge.TLabel', 
+			background=self.palette['primary'] if self.dark_mode else self.palette['primary'], 
+			foreground='#ffffff', 
+			padding=(16, 10),
+			font=tag_font,
+			relief='flat')
+		
+		# Viewer container with dark background
+		viewer_bg = '#0a0f1a' if self.dark_mode else self.palette['bg']
+		style.configure('Viewer.TFrame', background=viewer_bg)
+		style.configure('ViewerMuted.TLabel', background=viewer_bg, foreground=self.palette['muted'])
 
 		# On Windows, align the title bar with current theme (dark/light)
 		self._apply_windows_titlebar_theme(self.dark_mode)
@@ -847,6 +890,18 @@ class KeyTaggerApp:
 			self._scroll_selected_into_view()
 		except Exception:
 			pass
+
+	def _on_viewer_container_resize(self, event: tk.Event) -> None:
+		"""Handle viewer container resize events to update tagging mode images."""
+		if not self.tagging_mode:
+			return
+		# Debounce resize events to avoid excessive redraws
+		if hasattr(self, '_viewer_resize_after_id') and self._viewer_resize_after_id:
+			try:
+				self.root.after_cancel(self._viewer_resize_after_id)
+			except Exception:
+				pass
+		self._viewer_resize_after_id = self.root.after(100, self._update_tagging_image)
 
 	def _compute_columns(self, available_width: int) -> int:
 		# Approximate per-card width: thumbnail + frame padding + grid padding
@@ -1271,12 +1326,12 @@ class KeyTaggerApp:
 				self.viewer_container.grid(row=1, column=1, sticky='nsew')
 				self.root.rowconfigure(0, weight=0)
 				self.root.rowconfigure(1, weight=1)
-				# Ensure viewer row expands while controls/tag input stay visible
+				# Ensure image row (row 1) expands while tags, controls, and input stay fixed
 				try:
-					self.viewer_container.rowconfigure(0, weight=1)
-					self.viewer_container.rowconfigure(1, weight=0)
-					self.viewer_container.rowconfigure(2, weight=0)
-					self.viewer_container.rowconfigure(3, weight=0)
+					self.viewer_container.rowconfigure(0, weight=0)  # Tags at top
+					self.viewer_container.rowconfigure(1, weight=1)  # Image expands
+					self.viewer_container.rowconfigure(2, weight=0)  # Media controls
+					self.viewer_container.rowconfigure(3, weight=0)  # Tag input at bottom
 				except Exception:
 					pass
 				# Show tagging input
@@ -1348,7 +1403,8 @@ class KeyTaggerApp:
 			self.viewer_container.update_idletasks()
 			vc_w = int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 1280)
 			vc_h = int(self.viewer_container.winfo_height() or 600)
-			avail_w = max(200, vc_w - 16)
+			# Account for image frame padding (12px on each side = 24 total)
+			avail_w = max(200, vc_w - 24)
 			try:
 				reserved_tags = int(self.tagging_tags_frame.winfo_height() or self.tagging_tags_frame.winfo_reqheight() or 0)
 			except Exception:
@@ -1357,7 +1413,13 @@ class KeyTaggerApp:
 				reserved_input = int(self.tagging_input_frame.winfo_height() or self.tagging_input_frame.winfo_reqheight() or 0)
 			except Exception:
 				reserved_input = 80
-			reserved_h = reserved_tags + reserved_input + 24
+			# Estimate control height (video/gif/audio controls when visible)
+			try:
+				reserved_controls = int(self.video_controls.winfo_height() or self.video_controls.winfo_reqheight() or 50) if self.video_controls.winfo_ismapped() else 50
+			except Exception:
+				reserved_controls = 50
+			# Total reserved: tags + input + controls + image frame padding (12px top + 12px bottom)
+			reserved_h = reserved_tags + reserved_input + reserved_controls + 24
 			avail_h = max(200, vc_h - reserved_h)
 		except Exception:
 			avail_w, avail_h = 1000, 700
@@ -1387,10 +1449,7 @@ class KeyTaggerApp:
 					new_w = max(1, int(w * scale))
 					new_h = max(1, int(h * scale))
 					resized = im.resize((new_w, new_h), Image.LANCZOS)
-					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-					canvas_img.paste(resized, offset)
-					photo = ImageTk.PhotoImage(canvas_img)
+					photo = ImageTk.PhotoImage(resized)
 					self._set_viewer_photo(photo)
 					self._render_tagging_tags()
 					return
@@ -1433,10 +1492,7 @@ class KeyTaggerApp:
 						new_w = max(1, int(w * scale))
 						new_h = max(1, int(h * scale))
 						resized = img.resize((new_w, new_h), Image.LANCZOS)
-						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-						canvas_img.paste(resized, offset)
-						photo = ImageTk.PhotoImage(canvas_img)
+						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
 					cap.release()
 				except Exception:
@@ -1463,10 +1519,7 @@ class KeyTaggerApp:
 						new_w = max(1, int(w * scale))
 						new_h = max(1, int(h * scale))
 						resized = im.resize((new_w, new_h), Image.LANCZOS)
-						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-						canvas_img.paste(resized, offset)
-						photo = ImageTk.PhotoImage(canvas_img)
+						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
 						self._render_tagging_tags()
 						return
@@ -1484,10 +1537,7 @@ class KeyTaggerApp:
 						new_w = max(1, int(w * scale))
 						new_h = max(1, int(h * scale))
 						resized = im.resize((new_w, new_h), Image.LANCZOS)
-						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-						canvas_img.paste(resized, offset)
-						photo = ImageTk.PhotoImage(canvas_img)
+						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
 						self._render_tagging_tags()
 						return
@@ -1504,10 +1554,7 @@ class KeyTaggerApp:
 						new_w = max(1, int(w * scale))
 						new_h = max(1, int(h * scale))
 						resized = im.resize((new_w, new_h), Image.LANCZOS)
-						canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-						offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-						canvas_img.paste(resized, offset)
-						photo = ImageTk.PhotoImage(canvas_img)
+						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
 						return
 				except Exception:
@@ -1523,10 +1570,7 @@ class KeyTaggerApp:
 					new_w = max(1, int(w * scale))
 					new_h = max(1, int(h * scale))
 					resized = im.resize((new_w, new_h), Image.LANCZOS)
-					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
-					canvas_img.paste(resized, offset)
-					photo = ImageTk.PhotoImage(canvas_img)
+					photo = ImageTk.PhotoImage(resized)
 					self._set_viewer_photo(photo)
 					self._render_tagging_tags()
 					return
@@ -1536,6 +1580,9 @@ class KeyTaggerApp:
 	def _on_tagging_enter(self, event: tk.Event) -> None:
 		# Accept and hide suggestions if visible
 		self._hide_tag_suggestions()
+		# Clear placeholder if active
+		if self._tagging_placeholder_active:
+			return
 		text = (self.tag_input_var.get() or '').strip().lower()
 		if not text:
 			return
@@ -2602,8 +2649,34 @@ class KeyTaggerApp:
 			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda t=tag_name: self._remove_tag_globally(t))
 			btn.pack(side='right')
 
+	def _set_tagging_placeholder(self) -> None:
+		"""Set placeholder text in the tagging entry."""
+		if not self.tag_input_var.get():
+			self._tagging_placeholder_active = True
+			placeholder_color = '#6b7280' if self.dark_mode else '#9ca3af'
+			self.tagging_entry.delete(0, 'end')
+			self.tagging_entry.insert(0, self._tagging_placeholder)
+			self.tagging_entry.config(fg=placeholder_color)
+	
+	def _clear_tagging_placeholder(self) -> None:
+		"""Clear placeholder text from the tagging entry."""
+		if self._tagging_placeholder_active:
+			self._tagging_placeholder_active = False
+			entry_fg = '#f3f4f6' if self.dark_mode else '#111827'
+			self.tagging_entry.delete(0, 'end')
+			self.tagging_entry.config(fg=entry_fg)
+	
+	def _on_tagging_focus_in(self, event: tk.Event) -> None:
+		"""Handle focus in event for tagging entry."""
+		self._clear_tagging_placeholder()
+	
+	def _on_tagging_focus_out(self, event: tk.Event) -> None:
+		"""Handle focus out event for tagging entry."""
+		if not self.tag_input_var.get():
+			self._set_tagging_placeholder()
+
 	def _render_tagging_tags(self) -> None:
-		# Render chips for current item's tags in tagging mode
+		# Render modern large badges for current item's tags in tagging mode
 		if not hasattr(self, 'tagging_tags_frame'):
 			return
 		for w in self.tagging_tags_frame.winfo_children():
@@ -2618,14 +2691,44 @@ class KeyTaggerApp:
 		except Exception:
 			tags = []
 		if not tags:
-			lbl = ttk.Label(self.tagging_tags_frame, text='No tags yet', style='Muted.TLabel')
+			lbl = ttk.Label(self.tagging_tags_frame, text='No tags yet. Start adding tags below!', style='ViewerMuted.TLabel', font=('Segoe UI', 11))
 			lbl.pack(anchor='w')
 			return
-		row = ttk.Frame(self.tagging_tags_frame, style='App.TFrame')
+		row = ttk.Frame(self.tagging_tags_frame, style='Viewer.TFrame')
 		row.pack(fill='x')
 		for t in tags:
-			chip = ttk.Label(row, text=f' {t} ', style='Tag.TLabel')
-			chip.pack(side='left', padx=3, pady=1)
+			# Create a rounded badge using tk.Canvas for modern look
+			badge_frame = tk.Frame(row, bg='#0a0f1a' if self.dark_mode else self.palette['bg'])
+			badge_frame.pack(side='left', padx=6, pady=4)
+			
+			# Create canvas with rounded rectangle
+			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0)
+			canvas.pack()
+			
+			# Measure text size
+			font = tkfont.Font(family='Segoe UI', size=13, weight='bold')
+			text_width = font.measure(t.upper())
+			text_height = font.metrics('linespace')
+			
+			# Badge dimensions with padding
+			pad_x, pad_y = 16, 10
+			badge_width = text_width + (pad_x * 2)
+			badge_height = text_height + (pad_y * 2)
+			
+			canvas.config(width=badge_width, height=badge_height)
+			
+			# Draw rounded rectangle
+			radius = 8
+			bg_color = self.palette['primary']
+			canvas.create_oval(0, 0, radius*2, radius*2, fill=bg_color, outline=bg_color)
+			canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=bg_color, outline=bg_color)
+			canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=bg_color, outline=bg_color)
+			canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=bg_color, outline=bg_color)
+			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=bg_color, outline=bg_color)
+			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=bg_color, outline=bg_color)
+			
+			# Draw text centered
+			canvas.create_text(badge_width//2, badge_height//2, text=t.upper(), fill='#ffffff', font=font)
 
 	def _on_tagging_entry_key(self, event: tk.Event):  # type: ignore[override]
 		# Prevent nav keys from inserting characters while the entry is focused
