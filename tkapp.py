@@ -498,11 +498,11 @@ class KeyTaggerApp:
 		self.tagging_tags_frame.grid_remove()
 		
 		# Frame to hold viewer label and open button overlay
-		self.viewer_image_frame = ttk.Frame(self.viewer_container)
+		self.viewer_image_frame = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
 		self.viewer_image_frame.grid(row=1, column=0, sticky='nsew', padx=12, pady=8)
 		self.viewer_image_frame.columnconfigure(0, weight=1)
 		self.viewer_image_frame.rowconfigure(0, weight=1)
-		self.viewer_label = ttk.Label(self.viewer_image_frame)
+		self.viewer_label = ttk.Label(self.viewer_image_frame, style='ViewerImage.TLabel')
 		self.viewer_label.grid(row=0, column=0)
 		# Button to open file in default application (positioned at top right)
 		self.viewer_open_btn = ttk.Button(self.viewer_image_frame, text='Open', command=self._open_current_file, style='Small.TButton')
@@ -751,6 +751,7 @@ class KeyTaggerApp:
 		viewer_bg = '#0a0f1a' if self.dark_mode else self.palette['bg']
 		style.configure('Viewer.TFrame', background=viewer_bg)
 		style.configure('ViewerMuted.TLabel', background=viewer_bg, foreground=self.palette['muted'])
+		style.configure('ViewerImage.TLabel', background=viewer_bg)
 
 		# On Windows, align the title bar with current theme (dark/light)
 		self._apply_windows_titlebar_theme(self.dark_mode)
@@ -1035,7 +1036,6 @@ class KeyTaggerApp:
 				self._update_viewer_image()
 			if self.tagging_mode:
 				self._update_tagging_image()
-				self._render_tagging_tags()
 
 	def apply_filters(self) -> None:
 		self.refresh_records()
@@ -1158,19 +1158,18 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 			if tags:
-				row_tags = tk.Frame(frame, bg=self.palette.get('card_bg', '#ffffff'))
-				row_tags.grid(row=3, column=0, pady=(2, 0))
+				# Container for wrapping tags
+				tags_container = tk.Frame(frame, bg=self.palette.get('card_bg', '#ffffff'))
+				tags_container.grid(row=3, column=0, pady=(2, 0), sticky='ew')
+				
+				# Available width for tags (thumbnail width)
+				available_width = max(120, int(self._thumb_px))
+				current_row = tk.Frame(tags_container, bg=self.palette.get('card_bg', '#ffffff'))
+				current_row.pack(fill='x', anchor='w')
+				current_row_width = 0
+				
 				for t in tags:
-					# Create canvas-based tag badge with random color
-					tag_color = get_tag_color(t)
-					badge_frame = tk.Frame(row_tags, bg=self.palette.get('card_bg', '#ffffff'))
-					badge_frame.pack(side='left', padx=2, pady=1)
-					
-					# Create canvas with rounded rectangle
-					canvas = tk.Canvas(badge_frame, width=1, height=1, bg=self.palette.get('card_bg', '#ffffff'), highlightthickness=0)
-					canvas.pack()
-					
-					# Measure text size
+					# Measure text size first
 					font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
 					text_width = font.measure(t.upper())
 					text_height = font.metrics('linespace')
@@ -1180,6 +1179,26 @@ class KeyTaggerApp:
 					x_button_width = 14  # Space for X button
 					badge_width = text_width + (pad_x * 2) + x_button_width
 					badge_height = text_height + (pad_y * 2)
+					
+					# Check if we need to wrap to a new row
+					badge_total_width = badge_width + 4  # 4 for padx=2 on each side
+					if current_row_width + badge_total_width > available_width and current_row_width > 0:
+						# Create new row for wrapping
+						current_row = tk.Frame(tags_container, bg=self.palette.get('card_bg', '#ffffff'))
+						current_row.pack(fill='x', anchor='w')
+						current_row_width = 0
+					
+					# Create canvas-based tag badge with random color
+					tag_color = get_tag_color(t)
+					badge_frame = tk.Frame(current_row, bg=self.palette.get('card_bg', '#ffffff'))
+					badge_frame.pack(side='left', padx=2, pady=1)
+					
+					# Track width for wrapping
+					current_row_width += badge_total_width
+					
+					# Create canvas with rounded rectangle
+					canvas = tk.Canvas(badge_frame, width=1, height=1, bg=self.palette.get('card_bg', '#ffffff'), highlightthickness=0)
+					canvas.pack()
 					
 					canvas.config(width=badge_width, height=badge_height)
 					
@@ -1386,7 +1405,6 @@ class KeyTaggerApp:
 				except Exception:
 					self.selected_ids = {self.current_view_id}
 			self._update_tagging_image()
-			self._render_tagging_tags()
 			# Put keyboard focus into the tag input so typing works immediately
 			try:
 				self.tagging_entry.focus_set()
@@ -1466,6 +1484,9 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 			return
+		# Render tags FIRST so we can calculate proper heights
+		self._render_tagging_tags()
+		
 		# Determine media type and stop previous playback if changed
 		mt = str(getattr(rec, 'media_type', '')).lower()
 		try:
@@ -1487,25 +1508,40 @@ class KeyTaggerApp:
 		# Compute available area inside viewer container
 		try:
 			self.viewer_container.update_idletasks()
+			# Force update of tags frame to get accurate height after wrapping
+			try:
+				self.tagging_tags_frame.update_idletasks()
+			except Exception:
+				pass
+			
 			vc_w = int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 1280)
 			vc_h = int(self.viewer_container.winfo_height() or 600)
 			# Account for image frame padding (12px on each side = 24 total)
 			avail_w = max(200, vc_w - 24)
+			
+			# Get actual tag frame height after wrapping
 			try:
-				reserved_tags = int(self.tagging_tags_frame.winfo_height() or self.tagging_tags_frame.winfo_reqheight() or 0)
+				if self.tagging_tags_frame.winfo_ismapped():
+					reserved_tags = max(int(self.tagging_tags_frame.winfo_height()), int(self.tagging_tags_frame.winfo_reqheight() or 0))
+				else:
+					reserved_tags = 0
 			except Exception:
 				reserved_tags = 0
+			
 			try:
 				reserved_input = int(self.tagging_input_frame.winfo_height() or self.tagging_input_frame.winfo_reqheight() or 0)
 			except Exception:
 				reserved_input = 80
+			
 			# Estimate control height (video/gif/audio controls when visible)
 			try:
 				reserved_controls = int(self.video_controls.winfo_height() or self.video_controls.winfo_reqheight() or 50) if self.video_controls.winfo_ismapped() else 50
 			except Exception:
 				reserved_controls = 50
+			
 			# Total reserved: tags + input + controls + image frame padding (12px top + 12px bottom)
-			reserved_h = reserved_tags + reserved_input + reserved_controls + 24
+			# Add extra padding for better spacing
+			reserved_h = reserved_tags + reserved_input + reserved_controls + 40
 			avail_h = max(200, vc_h - reserved_h)
 		except Exception:
 			avail_w, avail_h = 1000, 700
@@ -1537,7 +1573,6 @@ class KeyTaggerApp:
 					resized = im.resize((new_w, new_h), Image.LANCZOS)
 					photo = ImageTk.PhotoImage(resized)
 					self._set_viewer_photo(photo)
-					self._render_tagging_tags()
 					return
 			except Exception:
 				pass
@@ -1583,7 +1618,6 @@ class KeyTaggerApp:
 					cap.release()
 				except Exception:
 					pass
-				self._render_tagging_tags()
 				return
 			except Exception:
 				pass
@@ -1607,7 +1641,6 @@ class KeyTaggerApp:
 						resized = im.resize((new_w, new_h), Image.LANCZOS)
 						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
-						self._render_tagging_tags()
 						return
 				except Exception:
 					pass
@@ -1625,7 +1658,6 @@ class KeyTaggerApp:
 						resized = im.resize((new_w, new_h), Image.LANCZOS)
 						photo = ImageTk.PhotoImage(resized)
 						self._set_viewer_photo(photo)
-						self._render_tagging_tags()
 						return
 				except Exception:
 					pass
@@ -1658,7 +1690,6 @@ class KeyTaggerApp:
 					resized = im.resize((new_w, new_h), Image.LANCZOS)
 					photo = ImageTk.PhotoImage(resized)
 					self._set_viewer_photo(photo)
-					self._render_tagging_tags()
 					return
 			except Exception:
 				pass
@@ -2721,10 +2752,31 @@ class KeyTaggerApp:
 			# Toggle by tag name directly
 			chk = ttk.Checkbutton(row, variable=var, style='HK.TCheckbutton', command=lambda t=tag_name, v=var: self._toggle_sidebar_tag_by_name(t, v.get()))
 			chk.pack(side='left')
-			# Tag name bolded
-			tag_lbl = ttk.Label(row, text=tag_name)
+			# Tag name bolded with max width and ellipsis
+			# Truncate long tag names to prevent sidebar expansion
+			max_tag_chars = 15  # Max characters before truncation
+			display_tag = tag_name if len(tag_name) <= max_tag_chars else f"{tag_name[:max_tag_chars]}..."
+			tag_lbl = ttk.Label(row, text=display_tag)
 			tag_lbl.configure(font=self._font_bold)
 			tag_lbl.pack(side='left', padx=(6, 6))
+			
+			# Add tooltip for truncated tags
+			if len(tag_name) > max_tag_chars:
+				def create_tooltip(widget, text):
+					def on_enter(event):
+						tooltip = tk.Toplevel()
+						tooltip.wm_overrideredirect(True)
+						tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+						label = tk.Label(tooltip, text=text, background="#ffffe0", relief='solid', borderwidth=1, font=('Segoe UI', 9))
+						label.pack()
+						widget._tooltip = tooltip
+					def on_leave(event):
+						if hasattr(widget, '_tooltip'):
+							widget._tooltip.destroy()
+							del widget._tooltip
+					widget.bind('<Enter>', on_enter)
+					widget.bind('<Leave>', on_leave)
+				create_tooltip(tag_lbl, tag_name)
 			# Key hint only if mapped
 			keys = sorted(tag_to_keys.get(tag_name, []))
 			if keys:
@@ -2780,19 +2832,25 @@ class KeyTaggerApp:
 			lbl = ttk.Label(self.tagging_tags_frame, text='No tags yet. Start adding tags below!', style='ViewerMuted.TLabel', font=('Segoe UI', 11))
 			lbl.pack(anchor='w')
 			return
-		row = ttk.Frame(self.tagging_tags_frame, style='Viewer.TFrame')
-		row.pack(fill='x')
+		
+		# Create a container that will hold multiple rows for wrapping
+		container = ttk.Frame(self.tagging_tags_frame, style='Viewer.TFrame')
+		container.pack(fill='both', expand=True)
+		
+		# Create rows for wrapping tags - we'll estimate when to wrap
+		current_row = ttk.Frame(container, style='Viewer.TFrame')
+		current_row.pack(fill='x', anchor='w')
+		current_row_width = 0
+		
+		# Estimate available width (container width minus padding)
+		try:
+			self.tagging_tags_frame.update_idletasks()
+			available_width = max(400, int(self.tagging_tags_frame.winfo_width() or 800) - 32)  # 32 for padding
+		except Exception:
+			available_width = 800
+		
 		for t in tags:
-			# Create a rounded badge using tk.Canvas for modern look with random color
-			tag_color = get_tag_color(t)
-			badge_frame = tk.Frame(row, bg='#0a0f1a' if self.dark_mode else self.palette['bg'])
-			badge_frame.pack(side='left', padx=6, pady=4)
-			
-			# Create canvas with rounded rectangle
-			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0)
-			canvas.pack()
-			
-			# Measure text size
+			# Measure text size first to determine badge width
 			font = tkfont.Font(family='Segoe UI', size=13, weight='bold')
 			text_width = font.measure(t.upper())
 			text_height = font.metrics('linespace')
@@ -2802,6 +2860,26 @@ class KeyTaggerApp:
 			x_button_width = 20  # Space for X button
 			badge_width = text_width + (pad_x * 2) + x_button_width
 			badge_height = text_height + (pad_y * 2)
+			
+			# Check if we need to wrap to a new row (badge width + padding + current width exceeds available)
+			badge_total_width = badge_width + 12  # 12 for padx=6 on each side
+			if current_row_width + badge_total_width > available_width and current_row_width > 0:
+				# Create new row for wrapping
+				current_row = ttk.Frame(container, style='Viewer.TFrame')
+				current_row.pack(fill='x', anchor='w')
+				current_row_width = 0
+			
+			# Create a rounded badge using tk.Canvas for modern look with random color
+			tag_color = get_tag_color(t)
+			badge_frame = tk.Frame(current_row, bg='#0a0f1a' if self.dark_mode else self.palette['bg'])
+			badge_frame.pack(side='left', padx=6, pady=4)
+			
+			# Track width for wrapping calculation
+			current_row_width += badge_total_width
+			
+			# Create canvas with rounded rectangle
+			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0)
+			canvas.pack()
 			
 			canvas.config(width=badge_width, height=badge_height)
 			
@@ -2845,6 +2923,12 @@ class KeyTaggerApp:
 			canvas.tag_bind('x_button', '<Button-1>', on_x_click)
 			canvas.tag_bind('x_button', '<Enter>', on_x_enter)
 			canvas.tag_bind('x_button', '<Leave>', on_x_leave)
+		
+		# Force layout update to ensure proper height calculation
+		try:
+			self.tagging_tags_frame.update_idletasks()
+		except Exception:
+			pass
 
 	def _on_tagging_entry_key(self, event: tk.Event):  # type: ignore[override]
 		# Prevent nav keys from inserting characters while the entry is focused
