@@ -134,6 +134,26 @@ def build_square_thumbnail(src_path: str, size: int = THUMB_SIZE) -> Optional[st
 		return None
 
 
+def create_rounded_rectangle(canvas, x1, y1, x2, y2, radius=10, **kwargs):
+	"""Create a rounded rectangle on a canvas."""
+	points = []
+	# Top-left corner
+	points.extend([x1 + radius, y1])
+	points.extend([x2 - radius, y1])
+	# Top-right corner
+	points.extend([x2, y1 + radius])
+	points.extend([x2, y2 - radius])
+	# Bottom-right corner
+	points.extend([x2 - radius, y2])
+	points.extend([x1 + radius, y2])
+	# Bottom-left corner
+	points.extend([x1, y2 - radius])
+	points.extend([x1, y1 + radius])
+	# Close the shape
+	points.extend([x1 + radius, y1])
+	return canvas.create_polygon(points, smooth=True, **kwargs)
+
+
 def build_audio_placeholder(size: int = THUMB_SIZE) -> Optional[str]:
 	"""Create or return a cached grey square placeholder with centered 'audio' text."""
 	try:
@@ -271,50 +291,87 @@ class KeyTaggerApp:
 		self.folder_var = tk.StringVar()
 		title = ttk.Label(side, text='KeyTagger', style='Title.TLabel')
 		title.pack(anchor='w', pady=(0, 8))
-		folder_row = ttk.Frame(side, style='Side.TFrame')
+
+		# Tab buttons container
+		tab_container = ttk.Frame(side, style='Side.TFrame')
+		tab_container.pack(fill='x', pady=(0, 8))
+		self.sidebar_tab_var = tk.StringVar(value='general')
+		
+		# Tab buttons with rounded styling
+		tab_buttons_frame = ttk.Frame(tab_container, style='Side.TFrame')
+		tab_buttons_frame.pack(fill='x')
+		
+		# Create a container frame for rounded tab buttons
+		tab_btn_container = ttk.Frame(tab_buttons_frame, style='Side.TFrame')
+		tab_btn_container.pack(fill='x')
+		
+		# General tab button (using Canvas for rounded corners)
+		general_tab_canvas = tk.Canvas(tab_btn_container, height=32, width=80, highlightthickness=0, 
+			bg=self.palette.get('side_bg', '#ffffff'), cursor='hand2')
+		general_tab_canvas.pack(side='left', padx=(0, 4))
+		general_tab_canvas.bind('<Button-1>', lambda e: self._switch_sidebar_tab('general'))
+		self.general_tab_btn = general_tab_canvas
+		self.general_tab_text_id = general_tab_canvas.create_text(40, 16, text='General', 
+			font=('Segoe UI', 9), anchor='center', fill=self.palette.get('text', '#111827'))
+		
+		# Tags & Hotkeys tab button (using Canvas for rounded corners)
+		tags_tab_canvas = tk.Canvas(tab_btn_container, height=32, width=120, highlightthickness=0,
+			bg=self.palette.get('side_bg', '#ffffff'), cursor='hand2')
+		tags_tab_canvas.pack(side='left')
+		tags_tab_canvas.bind('<Button-1>', lambda e: self._switch_sidebar_tab('tags'))
+		self.tags_tab_btn = tags_tab_canvas
+		self.tags_tab_text_id = tags_tab_canvas.create_text(60, 16, text='Tags & Hotkeys',
+			font=('Segoe UI', 9), anchor='center', fill=self.palette.get('text', '#111827'))
+		
+		# Store canvas references for rounded rectangle drawing
+		self.general_tab_rect_id = None
+		self.tags_tab_rect_id = None
+		
+		# Tab content frames
+		self.general_tab_frame = ttk.Frame(side, style='Side.TFrame')
+		self.tags_tab_frame = ttk.Frame(side, style='Side.TFrame')
+		
+		# General tab content
+		folder_row = ttk.Frame(self.general_tab_frame, style='Side.TFrame')
 		folder_row.pack(fill='x', pady=(0, 8))
 		pick_btn = ttk.Button(folder_row, text='Pick Folder', command=self.pick_folder, style='Primary.TButton')
 		pick_btn.pack(side='left')
-		folder_entry = ttk.Entry(side, textvariable=self.folder_var, width=40)
+		folder_entry = ttk.Entry(self.general_tab_frame, textvariable=self.folder_var, width=40)
 		folder_entry.pack(fill='x', pady=(6, 8))
-		scan_btn = ttk.Button(side, text='Scan Folder', command=self.scan_folder, style='Accent.TButton')
+		scan_btn = ttk.Button(self.general_tab_frame, text='Scan Folder', command=self.scan_folder, style='Accent.TButton')
 		scan_btn.pack(fill='x')
 
 		# Tag filter (comma-separated). Default to OR behavior; a toggle switches to AND
-		filter_lbl = ttk.Label(side, text='Filter by tags (comma-separated)', style='Muted.TLabel')
+		filter_lbl = ttk.Label(self.general_tab_frame, text='Filter by tags (comma-separated)', style='Muted.TLabel')
 		filter_lbl.pack(anchor='w', pady=(10, 2))
 		self.filter_tags_var = tk.StringVar()
-		filter_entry = ttk.Entry(side, textvariable=self.filter_tags_var, width=40)
+		filter_entry = ttk.Entry(self.general_tab_frame, textvariable=self.filter_tags_var, width=40)
 		filter_entry.pack(fill='x')
 		self.filter_match_all_var = tk.BooleanVar(value=False)  # False = OR (default)
-		chk_all = ttk.Checkbutton(side, text='Match ALL tags (AND)', variable=self.filter_match_all_var, command=self.apply_filters)
+		chk_all = ttk.Checkbutton(self.general_tab_frame, text='Match ALL tags (AND)', variable=self.filter_match_all_var, command=self.apply_filters)
 		chk_all.pack(anchor='w', pady=(4, 8))
-		btn_apply_filter = ttk.Button(side, text='Apply Filter', command=self.apply_filters, style='Small.TButton')
+		btn_apply_filter = ttk.Button(self.general_tab_frame, text='Apply Filter', command=self.apply_filters, style='Small.TButton')
 		btn_apply_filter.pack(anchor='w')
 
 		# Thumbnail size slider
-		sz_label = ttk.Label(side, text='Thumbnail size', style='Muted.TLabel')
+		sz_label = ttk.Label(self.general_tab_frame, text='Thumbnail size', style='Muted.TLabel')
 		sz_label.pack(anchor='w', pady=(10, 2))
 		self.thumb_size_var = tk.IntVar(value=int(self._thumb_px))
-		sz = ttk.Scale(side, from_=120, to=512, orient='horizontal', variable=self.thumb_size_var, command=self._on_thumb_size_change)
+		sz = ttk.Scale(self.general_tab_frame, from_=120, to=512, orient='horizontal', variable=self.thumb_size_var, command=self._on_thumb_size_change)
 		sz.set(self._thumb_px)
 		sz.pack(fill='x')
 
 		# Hotkey settings
-		settings_btn = ttk.Button(side, text='Settings', command=self.open_settings)
+		settings_btn = ttk.Button(self.general_tab_frame, text='Settings', command=self.open_settings)
 		settings_btn.pack(fill='x', pady=(12, 6))
 		self.last_key_var = tk.StringVar(value='Last key: (none)')
-		last_key_lbl = ttk.Label(side, textvariable=self.last_key_var, style='Muted.TLabel')
-		last_key_lbl.pack(fill='x')
 
-		# Hotkeys panel
-		sep1 = ttk.Separator(side)
-		sep1.pack(fill='x', pady=(10, 8))
-		hk_title = ttk.Label(side, text='Tags & Hotkeys', style='Title.TLabel')
+		# Tags & Hotkeys tab content
+		hk_title = ttk.Label(self.tags_tab_frame, text='Tags & Hotkeys', style='Title.TLabel')
 		hk_title.pack(anchor='w', pady=(0, 6))
 		self.hk_new_key_var = tk.StringVar()
 		self.hk_new_tag_var = tk.StringVar()
-		row_add = ttk.Frame(side, style='Side.TFrame')
+		row_add = ttk.Frame(self.tags_tab_frame, style='Side.TFrame')
 		row_add.pack(fill='x', pady=(0, 6))
 		# Use tk.Entry here to support placeholder text color
 		self.hk_entry_key = tk.Entry(row_add, textvariable=self.hk_new_key_var, width=8)
@@ -325,18 +382,18 @@ class KeyTaggerApp:
 		self._install_entry_placeholder(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
 		btn_add = ttk.Button(row_add, text='Add', command=self._add_hotkey_mapping, style='Small.TButton')
 		btn_add.pack(side='left')
-		self.hotkey_list_frame = ttk.Frame(side, style='Side.TFrame')
+		self.hotkey_list_frame = ttk.Frame(self.tags_tab_frame, style='Side.TFrame')
 		self.hotkey_list_frame.pack(fill='x', pady=(6, 0))
 		self._render_hotkey_list()
 
 		# Viewing mode toggle button
-		self.view_toggle_btn = ttk.Button(side, text='Enter Viewing Mode', command=self.toggle_view_mode, style='Small.TButton')
+		self.view_toggle_btn = ttk.Button(self.tags_tab_frame, text='Enter Viewing Mode', command=self.toggle_view_mode, style='Small.TButton')
 		self.view_toggle_btn.pack(fill='x', pady=(8, 0))
 		# Tagging mode toggle button
-		self.tagging_toggle_btn = ttk.Button(side, text='Enter Tagging Mode', command=self.toggle_tagging_mode, style='Small.TButton')
+		self.tagging_toggle_btn = ttk.Button(self.tags_tab_frame, text='Enter Tagging Mode', command=self.toggle_tagging_mode, style='Small.TButton')
 		self.tagging_toggle_btn.pack(fill='x', pady=(6, 0))
 		# Tagging navigation hotkeys (visible only in tagging mode)
-		self.tagging_nav_frame = ttk.Frame(side, style='Side.TFrame')
+		self.tagging_nav_frame = ttk.Frame(self.tags_tab_frame, style='Side.TFrame')
 		row_nav1 = ttk.Frame(self.tagging_nav_frame, style='Side.TFrame')
 		row_nav1.pack(fill='x', pady=(8, 2))
 		lbl_prev = ttk.Label(row_nav1, text='Tagging: Prev key', style='Muted.TLabel')
@@ -352,6 +409,10 @@ class KeyTaggerApp:
 		btn_apply_nav = ttk.Button(self.tagging_nav_frame, text='Apply Tagging Keys', style='Small.TButton', command=self._apply_tagging_keys)
 		btn_apply_nav.pack(fill='x')
 		self.tagging_nav_frame.pack_forget()
+		
+		# Pack initial tab
+		self.general_tab_frame.pack(fill='both', expand=True)
+		self._update_tab_buttons_style()
 
 		# Main area with scrollable canvas (gallery)
 		main = ttk.Frame(self.root, style='App.TFrame')
@@ -376,8 +437,17 @@ class KeyTaggerApp:
 		self.viewer_container = ttk.Frame(self.root, style='App.TFrame')
 		self.viewer_container.grid(row=1, column=1, sticky='nsew')
 		self.root.rowconfigure(1, weight=0)
-		self.viewer_label = ttk.Label(self.viewer_container)
-		self.viewer_label.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+		# Frame to hold viewer label and open button overlay
+		self.viewer_image_frame = ttk.Frame(self.viewer_container)
+		self.viewer_image_frame.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+		self.viewer_image_frame.columnconfigure(0, weight=1)
+		self.viewer_image_frame.rowconfigure(0, weight=1)
+		self.viewer_label = ttk.Label(self.viewer_image_frame)
+		self.viewer_label.grid(row=0, column=0, sticky='nsew')
+		# Button to open file in default application (positioned at top right)
+		self.viewer_open_btn = ttk.Button(self.viewer_image_frame, text='Open', command=self._open_current_file, style='Small.TButton')
+		self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
+		self.viewer_open_btn.place_forget()  # Hide initially
 		# Video controls (hidden unless a video is selected)
 		self.video_controls = ttk.Frame(self.viewer_container, style='App.TFrame')
 		self.video_controls.grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 10))
@@ -429,6 +499,67 @@ class KeyTaggerApp:
 		self.root.configure(background=self.palette.get('root_bg', '#e9edf5'))
 		# Ensure layout reflects initial non-view mode
 		self._apply_view_mode_layout()
+
+	def _switch_sidebar_tab(self, tab_name: str) -> None:
+		"""Switch between General and Tags & Hotkeys tabs."""
+		self.sidebar_tab_var.set(tab_name)
+		if tab_name == 'general':
+			self.tags_tab_frame.pack_forget()
+			self.general_tab_frame.pack(fill='both', expand=True)
+		else:  # tags
+			self.general_tab_frame.pack_forget()
+			self.tags_tab_frame.pack(fill='both', expand=True)
+		self._update_tab_buttons_style()
+
+	def _update_tab_buttons_style(self) -> None:
+		"""Update tab button styles to show active/inactive state with rounded corners."""
+		active_bg = self.palette.get('primary', '#2563eb')
+		active_fg = '#ffffff'
+		inactive_bg = self.palette.get('side_bg', '#ffffff')
+		inactive_fg = self.palette.get('muted', '#6b7280')
+		radius = 8  # Rounded corner radius
+		
+		current_tab = self.sidebar_tab_var.get()
+		
+		def draw_rounded_rect(canvas, bg_color, fg_color, text_id):
+			"""Draw a rounded rectangle on the canvas."""
+			canvas.delete('rounded_bg')
+			# Use configured width or actual width, whichever is available
+			w = canvas.winfo_reqwidth() if canvas.winfo_reqwidth() > 1 else canvas.winfo_width()
+			h = canvas.winfo_height()
+			if w < 1:
+				w = 80 if canvas == self.general_tab_btn else 120  # Fallback to default widths
+			if w > 1 and h > 1:
+				# Draw rounded rectangle using helper function
+				create_rounded_rectangle(canvas, 2, 2, w-2, h-2, radius=radius,
+					fill=bg_color, outline='', tags='rounded_bg')
+				# Update text color
+				canvas.itemconfig(text_id, fill=fg_color)
+				# Ensure text is on top
+				canvas.tag_raise(text_id)
+		
+		try:
+			if current_tab == 'general':
+				draw_rounded_rect(self.general_tab_btn, active_bg, active_fg, self.general_tab_text_id)
+				draw_rounded_rect(self.tags_tab_btn, inactive_bg, inactive_fg, self.tags_tab_text_id)
+			else:  # tags
+				draw_rounded_rect(self.tags_tab_btn, active_bg, active_fg, self.tags_tab_text_id)
+				draw_rounded_rect(self.general_tab_btn, inactive_bg, inactive_fg, self.general_tab_text_id)
+		except Exception:
+			# Fallback if rounded rectangle not supported
+			try:
+				if current_tab == 'general':
+					self.general_tab_btn.configure(bg=active_bg)
+					self.general_tab_btn.itemconfig(self.general_tab_text_id, fill=active_fg)
+					self.tags_tab_btn.configure(bg=inactive_bg)
+					self.tags_tab_btn.itemconfig(self.tags_tab_text_id, fill=inactive_fg)
+				else:
+					self.tags_tab_btn.configure(bg=active_bg)
+					self.tags_tab_btn.itemconfig(self.tags_tab_text_id, fill=active_fg)
+					self.general_tab_btn.configure(bg=inactive_bg)
+					self.general_tab_btn.itemconfig(self.general_tab_text_id, fill=inactive_fg)
+			except Exception:
+				pass
 
 	def _setup_theme(self) -> None:
 		style = ttk.Style()
@@ -521,9 +652,29 @@ class KeyTaggerApp:
 		style.configure('Card.TFrame', background=self.palette['card_bg'])
 		style.configure('Tag.TLabel', background=self.palette['tag_bg'], foreground=self.palette['tag_fg'], padding=(6, 2))
 
+		# On Windows, align the title bar with current theme (dark/light)
+		self._apply_windows_titlebar_theme(self.dark_mode)
+		# Re-apply once the window is realized to ensure DWM picks it up
+		try:
+			self.root.after(50, lambda: self._apply_windows_titlebar_theme(self.dark_mode))
+		except Exception:
+			pass
+
 		# Fonts for hotkey list
 		self._font_bold = tkfont.Font(family='Segoe UI', size=10, weight='bold')
 		self._font_muted = tkfont.Font(family='Segoe UI', size=9)
+
+		# Update tab button backgrounds if they exist
+		try:
+			if hasattr(self, 'general_tab_btn'):
+				self.general_tab_btn.configure(bg=self.palette['side_bg'])
+			if hasattr(self, 'tags_tab_btn'):
+				self.tags_tab_btn.configure(bg=self.palette['side_bg'])
+			# Update tab button styles
+			if hasattr(self, '_update_tab_buttons_style'):
+				self._update_tab_buttons_style()
+		except Exception:
+			pass
 
 		# Update container backgrounds if already created
 		try:
@@ -1090,6 +1241,8 @@ class KeyTaggerApp:
 			try:
 				self.viewer_label.configure(image='')
 				self.viewer_label.image = None  # type: ignore[attr-defined]
+				# Hide open button when clearing viewer
+				self.viewer_open_btn.place_forget()
 			except Exception:
 				pass
 			return
@@ -1370,6 +1523,8 @@ class KeyTaggerApp:
 			try:
 				self.viewer_label.configure(image='')
 				self.viewer_label.image = None  # type: ignore[attr-defined]
+				# Hide open button when no file is selected
+				self.viewer_open_btn.place_forget()
 			except Exception:
 				pass
 			# Clear viewer state when nothing is selected
@@ -1394,16 +1549,15 @@ class KeyTaggerApp:
 			avail_w, avail_h = 800, 500
 		# Images: render full resolution scaled, not thumbnails
 		if mt == 'image' and rec.file_path and os.path.exists(rec.file_path):
-			# Animated GIF support: play animation instead of static render
-			try:
-				_, ext = os.path.splitext(rec.file_path)
-				if ext.lower() == '.gif':
-					self._start_gif_playback(rec.file_path, current_session)
-					return
-			except Exception:
-				pass
+			# Show static first frame (no autoplay for GIFs)
 			try:
 				with Image.open(rec.file_path) as im:
+					# For animated GIFs, seek to first frame
+					try:
+						if hasattr(im, 'is_animated') and im.is_animated:
+							im.seek(0)
+					except Exception:
+						pass
 					im = im.convert('RGB')
 					w, h = im.size
 					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
@@ -1417,12 +1571,93 @@ class KeyTaggerApp:
 					self.viewer_photo = photo
 					self.viewer_label.configure(image=photo)
 					self.viewer_label.image = photo  # type: ignore[attr-defined]
+					# Show open button
+					try:
+						self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
+					except Exception:
+						pass
 			except Exception:
 				pass
 			return
-		# Video: play the actual video in the bottom viewer if possible
+		# Video: show thumbnail/static frame (no autoplay)
 		if mt == 'video' and rec.file_path and os.path.exists(rec.file_path):
-			self._start_video_playback(rec.file_path, current_session)
+			# Show video controls but don't autoplay - show thumbnail or first frame
+			if changed:
+				try:
+					self.video_controls.grid()
+					self._video_pause = True  # Start paused
+					self.video_play_btn.configure(text='Play')
+					self._video_updating_slider = True
+					# Try to get video metadata for controls
+					try:
+						import cv2  # type: ignore
+						cap_probe = cv2.VideoCapture(rec.file_path)
+						if cap_probe.isOpened():
+							self._video_fps = float(cap_probe.get(cv2.CAP_PROP_FPS) or 30.0) or 30.0
+							self._video_total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+							self._video_duration_s = (self._video_total_frames / self._video_fps) if self._video_fps > 0 else 0.0
+							# Try to read first frame for display
+							ok, frame = cap_probe.read()
+							if ok:
+								frame_rgb = frame[:, :, ::-1]
+								img = Image.fromarray(frame_rgb)
+								w, h = img.size
+								scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+								new_w = max(1, int(w * scale))
+								new_h = max(1, int(h * scale))
+								resized = img.resize((new_w, new_h), Image.LANCZOS)
+								canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+								offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+								canvas_img.paste(resized, offset)
+								photo = ImageTk.PhotoImage(canvas_img)
+								self.viewer_photo = photo
+								self.viewer_label.configure(image=photo)
+								self.viewer_label.image = photo  # type: ignore[attr-defined]
+							cap_probe.release()
+						else:
+							self._video_fps = 30.0
+							self._video_total_frames = 0
+							self._video_duration_s = 0.0
+					except Exception:
+						self._video_fps = 30.0
+						self._video_total_frames = 0
+						self._video_duration_s = 0.0
+						# Fallback to thumbnail if available
+						thumb = getattr(rec, 'thumbnail_path', None)
+						if thumb and os.path.exists(thumb):
+							try:
+								with Image.open(thumb) as im:
+									im = im.convert('RGB')
+									w, h = im.size
+									scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
+									new_w = max(1, int(w * scale))
+									new_h = max(1, int(h * scale))
+									resized = im.resize((new_w, new_h), Image.LANCZOS)
+									canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
+									offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+									canvas_img.paste(resized, offset)
+									photo = ImageTk.PhotoImage(canvas_img)
+									self.viewer_photo = photo
+									self.viewer_label.configure(image=photo)
+									self.viewer_label.image = photo  # type: ignore[attr-defined]
+							except Exception:
+								pass
+					self.video_seek.configure(from_=0.0, to=max(0.01, float(self._video_duration_s) or 0.01))
+					self._video_pos_var.set(0.0)
+					self._video_updating_slider = False
+					self.video_time_lbl.configure(text=f"00:00 / {self._format_time(self._video_duration_s)}")
+					# Hide audio controls while video is active
+					try:
+						self.audio_controls.grid_remove()
+					except Exception:
+						pass
+					# Show open button
+					try:
+						self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
+					except Exception:
+						pass
+				except Exception:
+					pass
 			return
 		# Audio: do not autoplay; show placeholder and audio controls
 		if mt == 'audio' and rec.file_path and os.path.exists(rec.file_path):
@@ -1433,6 +1668,11 @@ class KeyTaggerApp:
 					self.audio_play_btn.configure(text='Play Audio')
 					# Ensure video controls are hidden for audio files
 					self.video_controls.grid_remove()
+					# Show open button
+					try:
+						self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
+					except Exception:
+						pass
 				except Exception:
 					pass
 			# Render placeholder image sized to viewer (safe to do on resize without restarting anything)
@@ -1853,6 +2093,26 @@ class KeyTaggerApp:
 		except Exception:
 			pass
 
+	def _open_current_file(self) -> None:
+		"""Open the currently viewed file in its default application."""
+		try:
+			rec = self._find_record_by_id(self.current_view_id)
+			if not rec or not rec.file_path or not os.path.exists(rec.file_path):
+				return
+			file_path = rec.file_path
+			# Use platform-specific method to open file
+			if sys.platform.startswith('win'):
+				# Windows: use os.startfile
+				os.startfile(file_path)
+			elif sys.platform == 'darwin':
+				# macOS: use open command
+				subprocess.Popen(['open', file_path])
+			else:
+				# Linux and others: use xdg-open
+				subprocess.Popen(['xdg-open', file_path])
+		except Exception:
+			pass
+
 	def _toggle_video_play(self) -> None:
 		try:
 			# If no video is currently playing, start playback for the selected video
@@ -2008,6 +2268,8 @@ class KeyTaggerApp:
 		self._hide_tag_suggestions()
 		self._setup_theme()
 		self._refresh_hotkey_placeholders()
+		# Update native titlebar to match theme
+		self._apply_windows_titlebar_theme(self.dark_mode)
 		# Refresh card styles and canvas bg
 		try:
 			self.canvas.configure(background=self.palette.get('canvas_bg', '#f6f7fb'))
@@ -2021,6 +2283,69 @@ class KeyTaggerApp:
 			pass
 		# Ensure proper layout after render (in case canvas width changed recently)
 		self._layout_cards()
+
+	def _apply_windows_titlebar_theme(self, dark: bool) -> None:
+		# Apply immersive title bar theme on Windows 10/11.
+		# Dark = True uses dark caption with light text; False uses light caption with dark text.
+		try:
+			if not sys.platform.startswith('win'):
+				return
+			import ctypes
+			# Resolve the real top-level HWND for the Tk root (some Tk builds return a child HWND)
+			try:
+				hwnd = int(self.root.winfo_id())
+				GA_ROOT = 2  # GetAncestor(..., GA_ROOT)
+				get_ancestor = ctypes.windll.user32.GetAncestor
+				get_ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+				get_ancestor.restype = ctypes.c_void_p
+				hwnd_root = get_ancestor(ctypes.c_void_p(hwnd), ctypes.c_uint(GA_ROOT))
+				if hwnd_root:
+					hwnd = int(hwnd_root)
+			except Exception:
+				hwnd = int(self.root.winfo_id())
+			# Constants vary by build; try both 20 and 19
+			DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+			DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+			# Optional: explicitly set caption/text colors when supported
+			DWMWA_CAPTION_COLOR = 35
+			DWMWA_TEXT_COLOR = 36
+			# DwmSetWindowAttribute signature
+			try:
+				DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+				DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+				DwmSetWindowAttribute.restype = ctypes.c_int
+			except Exception:
+				# Fallback to dynamic call if we cannot set signatures (should still work)
+				DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+			val = ctypes.c_int(1 if dark else 0)  # BOOL
+			try:
+				DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE), ctypes.byref(val), ctypes.sizeof(val))
+			except Exception:
+				try:
+					DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE_OLD), ctypes.byref(val), ctypes.sizeof(val))
+				except Exception:
+					pass
+			# Try to set explicit caption (title bar) and text colors to black/white
+			try:
+				# COLORREF is 0x00bbggrr
+				if dark:
+					c_caption = ctypes.c_uint(0x00000000)   # black
+					c_text = ctypes.c_uint(0x00FFFFFF)      # white
+				else:
+					c_caption = ctypes.c_uint(0x00FFFFFF)   # white
+					c_text = ctypes.c_uint(0x00000000)      # black
+				DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_uint(DWMWA_CAPTION_COLOR), ctypes.byref(c_caption), ctypes.sizeof(c_caption))
+				DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_uint(DWMWA_TEXT_COLOR), ctypes.byref(c_text), ctypes.sizeof(c_text))
+			except Exception:
+				pass
+			# Nudge a non-client area repaint so the caption updates immediately
+			try:
+				RDW_FRAME = 0x0400
+				ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(hwnd), None, None, ctypes.c_uint(RDW_FRAME))
+			except Exception:
+				pass
+		except Exception:
+			pass
 
 	def _render_hotkey_list(self) -> None:
 		if not hasattr(self, 'hotkey_list_frame'):

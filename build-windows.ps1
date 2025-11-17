@@ -9,15 +9,7 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue executable\KeyTagger
 
 # Build (Tkinter desktop)
 pyinstaller `
-	--name KeyTagger `
-	--noconsole `
 	--distpath "executable" `
-	--add-data "keytagger;keytagger" `
-	--add-data "requirements.txt;." `
-	--hidden-import PIL `
-	--hidden-import imagehash `
-	--hidden-import cv2 `
-	--hidden-import numpy `
-	tkapp.py
+	KeyTagger.spec
 
 Write-Host "Build complete. See executable/KeyTagger" -ForegroundColor Green
