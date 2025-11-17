@@ -141,7 +141,8 @@ def set_thumb_size(px: int) -> None:
 def get_dark_mode() -> bool:
 	cfg = load_config()
 	val = cfg.get('dark_mode')
-	return bool(val) if isinstance(val, (bool, int)) else False
+	# Default to dark mode if not explicitly set in config
+	return bool(val) if isinstance(val, (bool, int)) else True
 
 
 def set_dark_mode(enabled: bool) -> None:
