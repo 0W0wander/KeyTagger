@@ -557,6 +557,9 @@ class KeyTaggerApp:
 		self.viewer_container = ttk.Frame(self.root, style='Viewer.TFrame')
 		self.viewer_container.grid(row=1, column=1, sticky='nsew')
 		self.viewer_container.columnconfigure(0, weight=1)
+		# Give tags (row 0) and viewer (row 1) vertical weight so tags can sit centered in the top half
+		self.viewer_container.rowconfigure(0, weight=1)
+		self.viewer_container.rowconfigure(1, weight=4)
 		self.root.rowconfigure(1, weight=0)
 		
 		# Tag list row (visible in tagging mode) - AT THE TOP
@@ -1714,14 +1717,15 @@ class KeyTaggerApp:
 				self.canvas.grid_remove()
 				self.scroll_x.grid_remove()
 				self.scroll_y.grid_remove()
-				# Place viewer in bottom row and give it all space
-				self.viewer_container.grid(row=1, column=1, sticky='nsew')
-				self.root.rowconfigure(0, weight=0)
-				self.root.rowconfigure(1, weight=1)
-				# Ensure image row (row 1) expands while tags, controls, and input stay fixed
+				# Place viewer in the main row and give it all space (use row 0 instead of bottom-only row)
+				self.viewer_container.grid(row=0, column=1, sticky='nsew')
+				self.root.rowconfigure(0, weight=1)
+				self.root.rowconfigure(1, weight=0)
+				# Ensure tags sit in the top portion and image occupies most of the remaining space
 				try:
-					self.viewer_container.rowconfigure(0, weight=0)  # Tags at top
-					self.viewer_container.rowconfigure(1, weight=1)  # Image expands
+					# Tags row gets some weight so they can sit in the upper half
+					self.viewer_container.rowconfigure(0, weight=1)  # Tags/top area
+					self.viewer_container.rowconfigure(1, weight=4)  # Image expands below
 					self.viewer_container.rowconfigure(2, weight=0)  # Media controls
 					self.viewer_container.rowconfigure(3, weight=0)  # Tag input at bottom
 				except Exception:
@@ -3356,17 +3360,24 @@ class KeyTaggerApp:
 		except Exception:
 			tags = []
 		if not tags:
-			lbl = ttk.Label(self.tagging_tags_frame, text='No tags yet. Start adding tags below!', style='ViewerMuted.TLabel', font=('Segoe UI', 11))
-			lbl.pack(anchor='w')
+			lbl = ttk.Label(
+				self.tagging_tags_frame,
+				text='No tags yet. Start adding tags below!',
+				style='ViewerMuted.TLabel',
+				font=('Segoe UI', 11),
+			)
+			# Center message in the available tagging area
+			lbl.pack(expand=True)
 			return
 		
 		# Create a container that will hold multiple rows for wrapping
+		# Pack with expand so it can sit roughly in the middle of the top half
 		container = ttk.Frame(self.tagging_tags_frame, style='Viewer.TFrame')
-		container.pack(fill='both', expand=True)
+		container.pack(expand=True)
 		
-		# Create rows for wrapping tags - we'll estimate when to wrap
+		# Create rows for wrapping tags - center rows horizontally
 		current_row = ttk.Frame(container, style='Viewer.TFrame')
-		current_row.pack(fill='x', anchor='w')
+		current_row.pack(anchor='center')
 		current_row_width = 0
 		
 		# Estimate available width (container width minus padding)
@@ -3393,7 +3404,7 @@ class KeyTaggerApp:
 			if current_row_width + badge_total_width > available_width and current_row_width > 0:
 				# Create new row for wrapping
 				current_row = ttk.Frame(container, style='Viewer.TFrame')
-				current_row.pack(fill='x', anchor='w')
+				current_row.pack(anchor='center')
 				current_row_width = 0
 			
 			# Create a rounded badge using tk.Canvas for modern look with random color
