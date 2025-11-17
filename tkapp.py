@@ -227,6 +227,13 @@ class KeyTaggerApp:
 		self._setup_theme()
 		self.db = Database(base_dir='.')
 		self.hotkeys: Dict[str, str] = load_hotkeys()
+		# Ensure all hotkey tags exist in database for autocomplete
+		try:
+			if self.hotkeys:
+				tag_names = list(set(self.hotkeys.values()))
+				self.db.upsert_tags(tag_names)
+		except Exception:
+			pass
 		self.selected_ids: Set[int] = set()
 		self._selection_anchor_id: Optional[int] = None
 		self.photo_cache: Dict[int, ImageTk.PhotoImage] = {}
@@ -2987,6 +2994,11 @@ class KeyTaggerApp:
 		if not k or not t:
 			messagebox.showerror('Hotkeys', 'Please enter both key and tag')
 			return
+		# Ensure the tag exists in the database for autocomplete
+		try:
+			self.db.upsert_tags([t])
+		except Exception:
+			pass
 		self.hotkeys[k] = t
 		save_hotkeys(self.hotkeys)
 		self.hk_new_key_var.set('')
