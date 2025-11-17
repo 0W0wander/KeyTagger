@@ -877,6 +877,9 @@ class KeyTaggerApp:
 
 		# Cards and tags
 		style.configure('Card.TFrame', background=self.palette['card_bg'])
+		# Footer area at bottom of each card (file name bar)
+		style.configure('CardFooter.TFrame', background=self.palette['side_bg'])
+		style.configure('CardFooter.TLabel', background=self.palette['side_bg'], foreground=self.palette['text'])
 		style.configure('Tag.TLabel', background=self.palette['tag_bg'], foreground=self.palette['tag_fg'], padding=(6, 2))
 		
 		# Modern large tag badges for tagging mode
@@ -1274,8 +1277,15 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 
-			img_label = ttk.Label(frame)
-			img_label.grid(row=1, column=0, padx=0, pady=0)
+			# Image container so we can overlay filename text on top of the image
+			img_container = tk.Frame(frame, bg='#000000')
+			img_container.grid(row=1, column=0, padx=0, pady=0, sticky='nsew')
+			img_container.columnconfigure(0, weight=1)
+			# Clicking anywhere on the image area selects the item
+			img_container.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
+
+			img_label = ttk.Label(img_container)
+			img_label.grid(row=0, column=0, sticky='nsew')
 			img_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 			# Fallbacks: show original image if available; audio uses placeholder
 			if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
@@ -1307,20 +1317,17 @@ class KeyTaggerApp:
 				except Exception:
 					pass
 
-			name_label = ttk.Label(frame, text=rec.file_name, width=40, wraplength=max(120, THUMB_SIZE), justify='center')
-			name_label.grid(row=2, column=0, padx=0, pady=(4, 0))
-			name_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
-
-			# Tags row
+			# Tags row (above filename overlay)
 			tags = []
 			try:
 				tags = self.db.get_media_tags(rec.id)
 			except Exception:
 				pass
-			if tags:
+			has_tags = bool(tags)
+			if has_tags:
 				# Container for wrapping tags
 				tags_container = tk.Frame(frame, bg=self.palette.get('card_bg', '#ffffff'))
-				tags_container.grid(row=3, column=0, pady=(2, 0), sticky='ew')
+				tags_container.grid(row=2, column=0, pady=(2, 0), sticky='ew')
 				
 				# Available width for tags (thumbnail width)
 				available_width = max(120, int(self._thumb_px))
@@ -1426,6 +1433,98 @@ class KeyTaggerApp:
 					canvas.tag_bind('x_button_border', '<Enter>', on_x_enter)
 					canvas.tag_bind('x_button', '<Leave>', on_x_leave)
 					canvas.tag_bind('x_button_border', '<Leave>', on_x_leave)
+
+			# Filename overlay drawn on top of the image at the bottom (semi-transparent via stipple)
+			overlay_bg = '#020617'
+			overlay_fg = '#f9fafb'
+			overlay_height = 22
+			name_canvas = tk.Canvas(
+				img_container,
+				height=overlay_height,
+				# Use card background so it blends with the image area; empty string is invalid as a color
+				bg=self.palette.get('card_bg', '#000000'),
+				highlightthickness=0,
+				bd=0,
+			)
+			name_canvas.place(relx=0.0, rely=1.0, anchor='sw', relwidth=1.0)
+			
+			def _draw_name_overlay(event=None, rec_id=rec.id, file_name=rec.file_name, c=name_canvas, rec_ref=rec):
+				c.delete('all')
+				w = max(int(c.winfo_width()), 1)
+				h = overlay_height
+				# Semi-transparent rectangle using lighter stipple pattern (more transparent)
+				c.create_rectangle(
+					0,
+					0,
+					w,
+					h,
+					fill=overlay_bg,
+					outline=overlay_bg,
+					stipple='gray25',
+				)
+				# Build filename + size text, truncating name if needed
+				size_bytes = getattr(rec_ref, 'size_bytes', None)
+				size_str = ''
+				if isinstance(size_bytes, int) and size_bytes > 0:
+					units = ['B', 'KB', 'MB', 'GB']
+					s = float(size_bytes)
+					unit_idx = 0
+					while s >= 1024 and unit_idx < len(units) - 1:
+						s /= 1024.0
+						unit_idx += 1
+					size_str = f'{s:.2f} {units[unit_idx]}'
+				right_text = f' {size_str}' if size_str else ''
+				font = ('Segoe UI', 9, 'bold')
+				padding_x = 6
+				text_y = h // 2
+				# Calculate available width for filename so both fit
+				if size_str:
+					size_width = c.create_text(0, -1000, text=size_str, font=font, anchor='e')
+					bbox = c.bbox(size_width) or (0, 0, 0, 0)
+					size_text_width = bbox[2] - bbox[0]
+					c.delete(size_width)
+					available_name_width = max(w - padding_x * 2 - size_text_width - 8, 20)
+				else:
+					available_name_width = max(w - padding_x * 2, 20)
+				# Truncate filename with ellipsis if too long
+				display_name = file_name
+				test_id = c.create_text(0, -1000, text=display_name, font=font, anchor='w')
+				bbox = c.bbox(test_id) or (0, 0, 0, 0)
+				name_width = bbox[2] - bbox[0]
+				c.delete(test_id)
+				if name_width > available_name_width:
+					ellipsis = '...'
+					for i in range(len(display_name), 0, -1):
+						trunc = display_name[:i] + ellipsis
+						test_id = c.create_text(0, -1000, text=trunc, font=font, anchor='w')
+						bbox = c.bbox(test_id) or (0, 0, 0, 0)
+						name_width = bbox[2] - bbox[0]
+						c.delete(test_id)
+						if name_width <= available_name_width:
+							display_name = trunc
+							break
+				# Draw filename on left with small border for readability
+				font = ('Segoe UI', 9, 'bold')
+				x = padding_x
+				y = text_y
+				border_color = '#000000'
+				for dx in (-1, 1):
+					for dy in (-1, 1):
+						c.create_text(x + dx, y + dy, text=display_name, fill=border_color, font=font, anchor='w')
+				c.create_text(x, y, text=display_name, fill=overlay_fg, font=font, anchor='w')
+				# Draw size text on the right, if available
+				if size_str:
+					c.create_text(
+						w - padding_x,
+						text_y,
+						text=size_str,
+						fill=overlay_fg,
+						font=font,
+						anchor='e',
+					)
+			
+			name_canvas.bind('<Configure>', _draw_name_overlay)
+			name_canvas.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 
 			self._update_card_style(frame, rec.id)
 
