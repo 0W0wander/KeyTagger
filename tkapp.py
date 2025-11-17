@@ -295,6 +295,8 @@ class KeyTaggerApp:
 		self._cols: int = 1
 		self._thumb_px: int = max(120, int(get_thumb_size()))
 		self._thumb_apply_after_id: Optional[str] = None
+		# Track selected tags for filtering
+		self.selected_filter_tags: Set[str] = set()
 		# Viewing mode state
 		self.view_mode: bool = False
 		self.current_view_id: Optional[int] = None
@@ -455,6 +457,11 @@ class KeyTaggerApp:
 		# Hotkey settings
 		settings_btn = ttk.Button(self.general_tab_frame, text='Settings', command=self.open_settings)
 		settings_btn.pack(fill='x', pady=(12, 6))
+		
+		# Database folder button
+		db_folder_btn = ttk.Button(self.general_tab_frame, text='Open Database Folder', command=self.open_database_folder, style='Small.TButton')
+		db_folder_btn.pack(fill='x', pady=(0, 6))
+		
 		self.last_key_var = tk.StringVar(value='Last key: (none)')
 
 		# Tags & Hotkeys tab content
@@ -1285,6 +1292,8 @@ class KeyTaggerApp:
 							self.db.remove_media_tags(int(media_id), [tag_name])
 							# Refresh gallery to show tag removal
 							self.refresh_records(preserve_selection=True)
+							# Show toast notification
+							self._show_centered_toast(f"Removed '{tag_name}'")
 						except Exception:
 							pass
 					
@@ -1800,7 +1809,7 @@ class KeyTaggerApp:
 			toast = f"Added '{text}'"
 		self.tag_input_var.set('')
 		self.refresh_records(preserve_selection=True)
-		self._show_toast(toast)
+		self._show_centered_toast(toast)
 		# Update visible tag list and keep focus for rapid entry
 		try:
 			self._render_tagging_tags()
@@ -2692,6 +2701,27 @@ class KeyTaggerApp:
 		lbl = ttk.Label(frm, text='Manage hotkeys in the left panel.', style='Muted.TLabel')
 		lbl.pack(anchor='w')
 
+	def open_database_folder(self) -> None:
+		"""Open the folder containing the database file in the system file explorer."""
+		try:
+			db_folder = os.path.abspath(self.db.base_dir)
+			
+			# Open folder in system file explorer based on OS
+			if sys.platform == 'win32':
+				# Windows
+				os.startfile(db_folder)
+			elif sys.platform == 'darwin':
+				# macOS
+				subprocess.Popen(['open', db_folder])
+			else:
+				# Linux and other Unix-like systems
+				subprocess.Popen(['xdg-open', db_folder])
+			
+			# Show a toast notification
+			self._show_toast(f'Opening database folder:\n{db_folder}')
+		except Exception as e:
+			messagebox.showerror('Error', f'Could not open database folder:\n{str(e)}')
+
 	def _toggle_dark_mode(self, enabled: bool) -> None:
 		self.dark_mode = bool(enabled)
 		set_dark_mode(self.dark_mode)
@@ -2809,44 +2839,192 @@ class KeyTaggerApp:
 		for tag_name in sorted(all_tags):
 			row = ttk.Frame(self.hotkey_list_frame, style='Side.TFrame')
 			row.pack(fill='x', pady=2)
-			var = tk.BooleanVar(value=False)
+			# Set checkbox based on whether tag is currently selected for filtering
+			is_selected = tag_name in self.selected_filter_tags
+			var = tk.BooleanVar(value=is_selected)
 			# Toggle by tag name directly
 			chk = ttk.Checkbutton(row, variable=var, style='HK.TCheckbutton', command=lambda t=tag_name, v=var: self._toggle_sidebar_tag_by_name(t, v.get()))
 			chk.pack(side='left')
-			# Tag name bolded with max width and ellipsis
+			# Tag name bolded with max width and ellipsis - clickable with hover effect
 			# Truncate long tag names to prevent sidebar expansion
 			max_tag_chars = 15  # Max characters before truncation
 			display_tag = tag_name if len(tag_name) <= max_tag_chars else f"{tag_name[:max_tag_chars]}..."
-			tag_lbl = ttk.Label(row, text=display_tag)
-			tag_lbl.configure(font=self._font_bold)
+			
+			# Use tk.Label for better control over cursor and font effects
+			tag_color = self.palette.get('text', '#111827')
+			tag_bg = self.palette.get('side_bg', '#ffffff')
+			tag_font = tkfont.Font(family='Segoe UI', size=10, weight='bold')
+			tag_lbl = tk.Label(row, text=display_tag, fg=tag_color, bg=tag_bg, font=tag_font, cursor='hand2')
 			tag_lbl.pack(side='left', padx=(6, 6))
 			
-			# Add tooltip for truncated tags
-			if len(tag_name) > max_tag_chars:
-				def create_tooltip(widget, text):
-					def on_enter(event):
-						tooltip = tk.Toplevel()
-						tooltip.wm_overrideredirect(True)
-						tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
-						label = tk.Label(tooltip, text=text, background="#ffffe0", relief='solid', borderwidth=1, font=('Segoe UI', 9))
-						label.pack()
-						widget._tooltip = tooltip
-					def on_leave(event):
-						if hasattr(widget, '_tooltip'):
-							widget._tooltip.destroy()
-							del widget._tooltip
-					widget.bind('<Enter>', on_enter)
-					widget.bind('<Leave>', on_leave)
-				create_tooltip(tag_lbl, tag_name)
+			# Add hover effects and click handler
+			def on_tag_enter(event, lbl=tag_lbl):
+				# Add underline on hover
+				current_font = lbl.cget('font')
+				underline_font = tkfont.Font(family='Segoe UI', size=10, weight='bold', underline=True)
+				lbl.config(font=underline_font)
+			
+			def on_tag_leave(event, lbl=tag_lbl):
+				# Remove underline
+				normal_font = tkfont.Font(family='Segoe UI', size=10, weight='bold')
+				lbl.config(font=normal_font)
+			
+			def on_tag_click(event, t=tag_name):
+				self._assign_hotkey_to_tag(t)
+			
+			tag_lbl.bind('<Enter>', on_tag_enter)
+			tag_lbl.bind('<Leave>', on_tag_leave)
+			tag_lbl.bind('<Button-1>', on_tag_click)
+			
+			# Add tooltip for truncated tags or to indicate clickability
+			tooltip_text = tag_name if len(tag_name) > max_tag_chars else f'Click to assign/edit hotkey for "{tag_name}"'
+			def create_tooltip(widget, text):
+				def on_enter(event):
+					tooltip = tk.Toplevel()
+					tooltip.wm_overrideredirect(True)
+					tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+					label = tk.Label(tooltip, text=text, background="#ffffe0", relief='solid', borderwidth=1, font=('Segoe UI', 9))
+					label.pack()
+					widget._tooltip = tooltip
+				def on_leave(event):
+					if hasattr(widget, '_tooltip'):
+						widget._tooltip.destroy()
+						del widget._tooltip
+				widget.bind('<Enter>', on_enter, add='+')
+				widget.bind('<Leave>', on_leave, add='+')
+			create_tooltip(tag_lbl, tooltip_text)
+			
 			# Key hint only if mapped
 			keys = sorted(tag_to_keys.get(tag_name, []))
 			if keys:
 				key_hint = f"({', '.join(keys)})" if len(keys) > 1 else f"({keys[0]})"
 				key_lbl = ttk.Label(row, text=key_hint, style='HKHint.TLabel')
 				key_lbl.pack(side='left')
-			# Remove button (always available): removes the tag globally and unmaps keys
-			btn = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda t=tag_name: self._remove_tag_globally(t))
-			btn.pack(side='right')
+			
+			# Remove button on the right side
+			btn_remove = ttk.Button(row, text='Remove', style='Small.TButton', command=lambda t=tag_name: self._remove_tag_globally(t))
+			btn_remove.pack(side='right')
+
+	def _assign_hotkey_to_tag(self, tag_name: str) -> None:
+		"""Open a dialog to assign or edit a hotkey for a tag."""
+		# Create dialog
+		dialog = tk.Toplevel(self.root)
+		dialog.title(f'Assign Hotkey to "{tag_name}"')
+		dialog.transient(self.root)
+		dialog.grab_set()
+		
+		# Set dialog background color
+		dialog_bg = self.palette.get('side_bg', '#ffffff')
+		dialog.configure(bg=dialog_bg)
+		
+		# Content frame
+		text_color = self.palette.get('text', '#111827')
+		muted_color = self.palette.get('muted', '#6b7280')
+		
+		frm = tk.Frame(dialog, bg=dialog_bg, padx=20, pady=20)
+		frm.pack(fill='both', expand=True)
+		
+		# Instructions
+		lbl_title = tk.Label(frm, text=f'Assign a hotkey to tag: {tag_name}', 
+							 font=('Segoe UI', 10, 'bold'), bg=dialog_bg, fg=text_color)
+		lbl_title.pack(pady=(0, 10))
+		
+		lbl_info = tk.Label(frm, text='Enter a single key (e.g., a, z, 1, 2)\nor a combination (e.g., ctrl+1, shift+a)', 
+							bg=dialog_bg, fg=muted_color, font=('Segoe UI', 9))
+		lbl_info.pack(pady=(0, 10))
+		
+		# Get current hotkey(s) for this tag
+		current_keys = [k for k, v in (self.hotkeys or {}).items() if v == tag_name]
+		current_key = current_keys[0] if current_keys else ''
+		
+		# Entry field with proper styling
+		entry_var = tk.StringVar(value=current_key)
+		entry_bg = '#ffffff' if not self.dark_mode else '#1f2937'
+		entry_fg = '#111827' if not self.dark_mode else '#f3f4f6'
+		entry = tk.Entry(frm, textvariable=entry_var, width=30, 
+						 bg=entry_bg, fg=entry_fg, 
+						 font=('Segoe UI', 10), 
+						 relief='solid', bd=1,
+						 insertbackground=entry_fg)
+		entry.pack(pady=(0, 15))
+		entry.focus_set()
+		
+		# Status label
+		status_var = tk.StringVar(value='')
+		status_lbl = tk.Label(frm, textvariable=status_var, bg=dialog_bg, fg='#dc2626', font=('Segoe UI', 9))
+		status_lbl.pack(pady=(0, 10))
+		
+		# Button frame
+		btn_frame = tk.Frame(frm, bg=dialog_bg)
+		btn_frame.pack(pady=(10, 0))
+		
+		def save_hotkey():
+			new_key = entry_var.get().strip().lower()
+			if not new_key:
+				status_var.set('Please enter a hotkey')
+				return
+			
+			# Check if key is already assigned to a different tag
+			if new_key in self.hotkeys and self.hotkeys[new_key] != tag_name:
+				existing_tag = self.hotkeys[new_key]
+				status_var.set(f'Key "{new_key}" is already assigned to "{existing_tag}"')
+				return
+			
+			# Remove old hotkey mappings for this tag
+			for k in current_keys:
+				if k in self.hotkeys:
+					del self.hotkeys[k]
+			
+			# Assign new hotkey
+			self.hotkeys[new_key] = tag_name
+			save_hotkeys(self.hotkeys)
+			
+			# Refresh the hotkey list
+			self._render_hotkey_list()
+			
+			# Show confirmation
+			self._show_centered_toast(f'Hotkey "{new_key}" assigned to "{tag_name}"')
+			
+			# Close dialog
+			dialog.destroy()
+		
+		def clear_hotkey():
+			# Remove all hotkey mappings for this tag
+			for k in current_keys:
+				if k in self.hotkeys:
+					del self.hotkeys[k]
+			save_hotkeys(self.hotkeys)
+			
+			# Refresh the hotkey list
+			self._render_hotkey_list()
+			
+			# Show confirmation
+			self._show_centered_toast(f'Hotkey removed from "{tag_name}"')
+			
+			# Close dialog
+			dialog.destroy()
+		
+		# Buttons
+		btn_save = ttk.Button(btn_frame, text='Save', command=save_hotkey, style='Primary.TButton')
+		btn_save.pack(side='left', padx=(0, 5))
+		
+		if current_keys:
+			btn_clear = ttk.Button(btn_frame, text='Clear Hotkey', command=clear_hotkey, style='Small.TButton')
+			btn_clear.pack(side='left', padx=(0, 5))
+		
+		btn_cancel = ttk.Button(btn_frame, text='Cancel', command=dialog.destroy)
+		btn_cancel.pack(side='left')
+		
+		# Bind Enter key to save
+		entry.bind('<Return>', lambda e: save_hotkey())
+		
+		# Center dialog on screen
+		dialog.update_idletasks()
+		width = dialog.winfo_width()
+		height = dialog.winfo_height()
+		x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+		y = (dialog.winfo_screenheight() // 2) - (height // 2)
+		dialog.geometry(f'{width}x{height}+{x}+{y}')
 
 	def _set_tagging_placeholder(self) -> None:
 		"""Set placeholder text in the tagging entry."""
@@ -2991,6 +3169,8 @@ class KeyTaggerApp:
 						self._render_tagging_tags()
 						# Refresh gallery to show tag removal
 						self.refresh_records(preserve_selection=True)
+						# Show toast notification
+						self._show_centered_toast(f"Removed '{tag_name}'")
 					except Exception:
 						pass
 			
@@ -3267,7 +3447,7 @@ class KeyTaggerApp:
 		if t == self._hk_tag_placeholder.lower():
 			t = ''
 		if not k or not t:
-			messagebox.showerror('Hotkeys', 'Please enter both key and tag')
+			self._show_centered_toast('Please enter both\nkey and tag')
 			return
 		# Ensure the tag exists in the database for autocomplete
 		try:
@@ -3282,7 +3462,7 @@ class KeyTaggerApp:
 		self._apply_placeholder_if_empty(self.hk_entry_key, self.hk_new_key_var, self._hk_key_placeholder)
 		self._apply_placeholder_if_empty(self.hk_entry_tag, self.hk_new_tag_var, self._hk_tag_placeholder)
 		self._render_hotkey_list()
-		messagebox.showinfo('Hotkeys', f"Added mapping {k} -> {t}")
+		self._show_centered_toast(f"Added mapping\n{k} -> {t}")
 
 	def _install_entry_placeholder(self, entry: Optional[tk.Entry], var: tk.StringVar, placeholder: str) -> None:
 		if entry is None:
@@ -3372,20 +3552,34 @@ class KeyTaggerApp:
 			self.refresh_records(preserve_selection=True)
 
 	def _toggle_sidebar_tag_by_name(self, tag: str, checked: bool) -> None:
-		# Toggle applying/removing a tag (by name) to current selection
+		# Toggle filtering by tag - add or remove from filter set
 		if not tag:
 			return
 		if checked:
-			self.apply_tag_to_selection(tag)
+			# Add tag to filter
+			self.selected_filter_tags.add(tag)
 		else:
-			if not self.selected_ids:
-				return
-			for mid in list(self.selected_ids):
-				try:
-					self.db.remove_media_tags(int(mid), [tag])
-				except Exception:
-					pass
-			self.refresh_records(preserve_selection=True)
+			# Remove tag from filter
+			self.selected_filter_tags.discard(tag)
+		
+		# Update the filter and refresh
+		self._apply_tag_filter()
+
+	def _apply_tag_filter(self) -> None:
+		"""Apply the selected tag filters to show only matching files."""
+		# Convert selected tags to comma-separated string
+		if self.selected_filter_tags:
+			tags_text = ', '.join(sorted(self.selected_filter_tags))
+			self.filter_tags_var.set(tags_text)
+			# Always use AND (match all) when filtering from sidebar
+			self.filter_match_all_var.set(True)
+		else:
+			# No tags selected - clear filter
+			self.filter_tags_var.set('')
+			self.filter_match_all_var.set(False)
+		
+		# Apply the filter
+		self.apply_filters()
 
 	def _remove_tag_globally(self, tag_name: str) -> None:
 		if not tag_name:
@@ -3410,16 +3604,19 @@ class KeyTaggerApp:
 			save_hotkeys(self.hotkeys)
 		except Exception:
 			pass
-		# Refresh UI
-		try:
-			self.refresh_records()
-		except Exception:
-			pass
+		# Remove from filter selection if present
+		if tag_name in self.selected_filter_tags:
+			self.selected_filter_tags.discard(tag_name)
+			self._apply_tag_filter()
+		else:
+			# Refresh UI
+			try:
+				self.refresh_records()
+			except Exception:
+				pass
 		self._render_hotkey_list()
-		try:
-			messagebox.showinfo('Tags', f"Removed '{tag_name}' from {removed} item(s)")
-		except Exception:
-			pass
+		# Show centered dark toast notification instead of popup
+		self._show_centered_toast(f"'{tag_name}' has been removed\nFrom {removed} item(s)")
 
 	def _should_skip_remove_tag_confirm(self) -> bool:
 		try:
@@ -3897,6 +4094,138 @@ class KeyTaggerApp:
 		except Exception:
 			self._selection_anchor_id = media_id
 
+	def _show_centered_toast(self, text: str, duration_ms: int = 2000) -> None:
+		"""Show a dark toast notification at the center of the screen that auto-disappears."""
+		# Destroy any existing centered toast
+		try:
+			if getattr(self, '_centered_toast_window', None) is not None:
+				try:
+					self._centered_toast_window.destroy()  # type: ignore[union-attr]
+				except Exception:
+					pass
+				self._centered_toast_window = None
+		except Exception:
+			self._centered_toast_window = None
+		
+		# Create borderless, topmost window
+		toast = tk.Toplevel(self.root)
+		self._centered_toast_window = toast
+		
+		# Dark blue styled content with rounded corners
+		bg = '#0f172a'  # Dark blue color
+		fg = '#ffffff'
+		
+		try:
+			toast.overrideredirect(True)
+			toast.attributes('-topmost', True)
+		except Exception:
+			pass
+		
+		# Create label to measure text first
+		temp_lbl = tk.Label(toast, text=text, bg=bg, fg=fg, font=('Segoe UI', 14, 'bold'), padx=40, pady=30)
+		temp_lbl.pack()
+		
+		# Size and position (center of root window)
+		try:
+			toast.update_idletasks()
+			root_x = int(self.root.winfo_rootx())
+			root_y = int(self.root.winfo_rooty())
+			root_w = int(self.root.winfo_width())
+			root_h = int(self.root.winfo_height())
+			
+			# Measure text to get proper size
+			temp_lbl.update_idletasks()
+			win_w = int(temp_lbl.winfo_reqwidth())
+			win_h = int(temp_lbl.winfo_reqheight())
+			
+			# Remove temp label
+			temp_lbl.pack_forget()
+			
+			# Center the toast
+			x = root_x + (root_w - win_w) // 2
+			y = root_y + (root_h - win_h) // 2
+			toast.geometry(f"{win_w}x{win_h}+{x}+{y}")
+			
+			# Create rounded rectangle using PIL
+			radius = 16
+			img = Image.new('RGBA', (win_w, win_h), (0, 0, 0, 0))
+			draw = ImageDraw.Draw(img)
+			
+			# Draw rounded rectangle (RGB values for #0f172a: 15, 23, 42)
+			draw.rounded_rectangle([(0, 0), (win_w-1, win_h-1)], radius=radius, fill=(15, 23, 42, 255))
+			
+			# Convert to PhotoImage
+			photo = ImageTk.PhotoImage(img)
+			
+			# Create canvas with transparent color
+			transparent_color = '#010101'  # Very dark color that won't appear in our content
+			canvas = tk.Canvas(toast, width=win_w, height=win_h, bg=transparent_color, highlightthickness=0, bd=0)
+			canvas.pack(fill='both', expand=True)
+			
+			# Draw the rounded rectangle image
+			canvas.create_image(0, 0, anchor='nw', image=photo)
+			canvas.image = photo  # Keep reference
+			
+			# Create the text label on the canvas
+			lbl = tk.Label(canvas, text=text, bg=bg, fg=fg, font=('Segoe UI', 14, 'bold'))
+			canvas.create_window(win_w//2, win_h//2, window=lbl)
+			
+			# Set window transparency
+			toast.configure(bg=transparent_color)
+			try:
+				toast.wm_attributes('-transparentcolor', transparent_color)
+			except Exception:
+				pass
+		except Exception:
+			# Fallback if PIL/transparency not available
+			toast.configure(bg=bg)
+			lbl = tk.Label(toast, text=text, bg=bg, fg=fg, font=('Segoe UI', 14, 'bold'), padx=40, pady=30)
+			lbl.pack()
+		
+		# Keep focus on the main window
+		try:
+			self.root.focus_force()
+		except Exception:
+			pass
+		
+		# Auto-destroy after duration with fade effect
+		alpha = 1.0
+		fade_steps = 10
+		fade_interval = 50  # ms between fade steps
+		display_time = duration_ms - (fade_steps * fade_interval)
+		
+		def _fade_out(step: int = 0) -> None:
+			nonlocal alpha
+			# If toast was replaced, stop
+			if toast is not getattr(self, '_centered_toast_window', None):
+				return
+			if step >= fade_steps:
+				try:
+					toast.destroy()
+					if getattr(self, '_centered_toast_window', None) is toast:
+						self._centered_toast_window = None
+				except Exception:
+					pass
+				return
+			
+			# Fade out
+			alpha = 1.0 - (step / fade_steps)
+			try:
+				toast.attributes('-alpha', alpha)
+			except Exception:
+				pass
+			
+			try:
+				toast.after(fade_interval, lambda: _fade_out(step + 1))
+			except Exception:
+				pass
+		
+		# Start fade-out after display time
+		try:
+			toast.after(display_time, _fade_out)
+		except Exception:
+			pass
+
 	def _show_toast(self, text: str, start_delay_ms: int = 900, fade_step_ms: int = 60, start_alpha: float = 0.95, step_delta: float = 0.08) -> None:
 		# Destroy any existing toast so we only show the latest
 		try:
@@ -4004,11 +4333,11 @@ class KeyTaggerApp:
 		except Exception:
 			pass
 		if changed_add and not changed_remove:
-			self._show_toast(f"Added '{tag}' to {changed_add} item(s)")
+			self._show_centered_toast(f"Added '{tag}'\nto {changed_add} item(s)")
 		elif changed_remove and not changed_add:
-			self._show_toast(f"Removed '{tag}' from {changed_remove} item(s)")
+			self._show_centered_toast(f"Removed '{tag}'\nfrom {changed_remove} item(s)")
 		else:
-			self._show_toast(f"Added '{tag}' to {changed_add}, removed from {changed_remove}")
+			self._show_centered_toast(f"Added '{tag}' to {changed_add}\nRemoved from {changed_remove}")
 
 	def open_hotkey_settings(self) -> None:
 		# Deprecated: hotkeys are managed in the left panel now.
