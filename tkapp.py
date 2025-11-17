@@ -27,6 +27,21 @@ THUMBS_DIR = os.path.join('.', 'thumbnails_square')
 THUMB_SIZE = 320
 
 
+def get_tag_color(tag_name: str, alpha: float = 0.6) -> str:
+	"""Generate a consistent random color for a tag name with semi-transparency."""
+	import hashlib
+	# Use hash of tag name to get consistent colors
+	hash_int = int(hashlib.md5(tag_name.encode()).hexdigest()[:8], 16)
+	
+	# Generate pleasant colors (avoid too dark or too light)
+	r = 100 + (hash_int % 156)  # 100-255
+	g = 100 + ((hash_int >> 8) % 156)  # 100-255
+	b = 100 + ((hash_int >> 16) % 156)  # 100-255
+	
+	# Return hex color (without alpha - we'll use it for canvas)
+	return f'#{r:02x}{g:02x}{b:02x}'
+
+
 def load_config() -> Dict:
 	try:
 		with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -1143,11 +1158,70 @@ class KeyTaggerApp:
 			except Exception:
 				pass
 			if tags:
-				row_tags = ttk.Frame(frame)
+				row_tags = tk.Frame(frame, bg=self.palette.get('card_bg', '#ffffff'))
 				row_tags.grid(row=3, column=0, pady=(2, 0))
 				for t in tags:
-					chip = ttk.Label(row_tags, text=f' {t} ', style='Tag.TLabel')
-					chip.pack(side='left', padx=3, pady=1)
+					# Create canvas-based tag badge with random color
+					tag_color = get_tag_color(t)
+					badge_frame = tk.Frame(row_tags, bg=self.palette.get('card_bg', '#ffffff'))
+					badge_frame.pack(side='left', padx=2, pady=1)
+					
+					# Create canvas with rounded rectangle
+					canvas = tk.Canvas(badge_frame, width=1, height=1, bg=self.palette.get('card_bg', '#ffffff'), highlightthickness=0)
+					canvas.pack()
+					
+					# Measure text size
+					font = tkfont.Font(family='Segoe UI', size=9, weight='bold')
+					text_width = font.measure(t.upper())
+					text_height = font.metrics('linespace')
+					
+					# Badge dimensions with padding (space for X button)
+					pad_x, pad_y = 8, 4
+					x_button_width = 14  # Space for X button
+					badge_width = text_width + (pad_x * 2) + x_button_width
+					badge_height = text_height + (pad_y * 2)
+					
+					canvas.config(width=badge_width, height=badge_height)
+					
+					# Draw rounded rectangle with semi-transparency effect
+					radius = 6
+					# Create semi-transparent color by blending with background
+					canvas.create_oval(0, 0, radius*2, radius*2, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+					
+					# Draw text (shifted left to make room for X)
+					text_color = '#ffffff' if self.dark_mode else '#000000'
+					canvas.create_text((badge_width - x_button_width)//2, badge_height//2, text=t.upper(), fill=text_color, font=font, tags='text')
+					
+					# Create visible X button
+					x_center_x = badge_width - x_button_width//2
+					x_center_y = badge_height//2
+					canvas.create_text(x_center_x, x_center_y, text='×', fill=text_color, font=('Segoe UI', 14, 'bold'), tags='x_button')
+					
+					# Click handler to remove tag (only on X button)
+					def on_x_click(event, tag_name=t, media_id=rec.id):
+						try:
+							self.db.remove_media_tags(int(media_id), [tag_name])
+							# Refresh gallery to show tag removal
+							self.refresh_records(preserve_selection=True)
+						except Exception:
+							pass
+					
+					# Hover handlers to change cursor on X button
+					def on_x_enter(event, c=canvas):
+						c.config(cursor='hand2')
+					
+					def on_x_leave(event, c=canvas):
+						c.config(cursor='')
+					
+					# Bind click only to the X button
+					canvas.tag_bind('x_button', '<Button-1>', on_x_click)
+					canvas.tag_bind('x_button', '<Enter>', on_x_enter)
+					canvas.tag_bind('x_button', '<Leave>', on_x_leave)
 
 			self._update_card_style(frame, rec.id)
 
@@ -2709,12 +2783,13 @@ class KeyTaggerApp:
 		row = ttk.Frame(self.tagging_tags_frame, style='Viewer.TFrame')
 		row.pack(fill='x')
 		for t in tags:
-			# Create a rounded badge using tk.Canvas for modern look
+			# Create a rounded badge using tk.Canvas for modern look with random color
+			tag_color = get_tag_color(t)
 			badge_frame = tk.Frame(row, bg='#0a0f1a' if self.dark_mode else self.palette['bg'])
 			badge_frame.pack(side='left', padx=6, pady=4)
 			
 			# Create canvas with rounded rectangle
-			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0, cursor='hand2')
+			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0)
 			canvas.pack()
 			
 			# Measure text size
@@ -2730,34 +2805,25 @@ class KeyTaggerApp:
 			
 			canvas.config(width=badge_width, height=badge_height)
 			
-			# Draw rounded rectangle
+			# Draw rounded rectangle with semi-transparency
 			radius = 8
-			bg_color = self.palette['primary']
-			canvas.create_oval(0, 0, radius*2, radius*2, fill=bg_color, outline=bg_color, tags='bg')
-			canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=bg_color, outline=bg_color, tags='bg')
-			canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=bg_color, outline=bg_color, tags='bg')
-			canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=bg_color, outline=bg_color, tags='bg')
-			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=bg_color, outline=bg_color, tags='bg')
-			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_oval(0, 0, radius*2, radius*2, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+			canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+			canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+			canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
+			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=tag_color, outline=tag_color, tags='bg', stipple='gray50')
 			
 			# Draw text (shifted left to make room for X)
 			canvas.create_text((badge_width - x_button_width)//2, badge_height//2, text=t.upper(), fill='#ffffff', font=font, tags='text')
 			
-			# Create X button (hidden by default, shown on hover)
-			x_size = 12
+			# Create visible X button (always shown now)
 			x_center_x = badge_width - x_button_width//2
 			x_center_y = badge_height//2
-			x_btn_id = canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=('Segoe UI', 18, 'bold'), tags='x_button', state='hidden')
+			canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=('Segoe UI', 18, 'bold'), tags='x_button')
 			
-			# Hover handlers to show/hide X button
-			def on_enter(event, c=canvas):
-				c.itemconfig('x_button', state='normal')
-			
-			def on_leave(event, c=canvas):
-				c.itemconfig('x_button', state='hidden')
-			
-			# Click handler to remove tag
-			def on_click(event, tag_name=t, c=canvas):
+			# Click handler to remove tag (only on X button)
+			def on_x_click(event, tag_name=t, c=canvas):
 				if self.current_view_id is not None:
 					try:
 						self.db.remove_media_tags(int(self.current_view_id), [tag_name])
@@ -2768,9 +2834,17 @@ class KeyTaggerApp:
 					except Exception:
 						pass
 			
-			canvas.bind('<Enter>', on_enter)
-			canvas.bind('<Leave>', on_leave)
-			canvas.bind('<Button-1>', on_click)
+			# Hover handlers to change cursor on X button
+			def on_x_enter(event, c=canvas):
+				c.config(cursor='hand2')
+			
+			def on_x_leave(event, c=canvas):
+				c.config(cursor='')
+			
+			# Bind click only to the X button
+			canvas.tag_bind('x_button', '<Button-1>', on_x_click)
+			canvas.tag_bind('x_button', '<Enter>', on_x_enter)
+			canvas.tag_bind('x_button', '<Leave>', on_x_leave)
 
 	def _on_tagging_entry_key(self, event: tk.Event):  # type: ignore[override]
 		# Prevent nav keys from inserting characters while the entry is focused
