@@ -571,6 +571,8 @@ class KeyTaggerApp:
 		self.viewer_image_frame.rowconfigure(0, weight=1)
 		self.viewer_label = ttk.Label(self.viewer_image_frame, style='ViewerImage.TLabel')
 		self.viewer_label.grid(row=0, column=0)
+		# Right-click in viewer to open context menu for current item
+		self.viewer_label.bind('<Button-3>', self._on_viewer_right_click)
 		# Button to open file in default application (positioned at top right)
 		self.viewer_open_btn = ttk.Button(self.viewer_image_frame, text='Open', command=self._open_current_file, style='Small.TButton')
 		self.viewer_open_btn.place(relx=1.0, rely=0.0, anchor='ne', x=-8, y=8)
@@ -1249,6 +1251,10 @@ class KeyTaggerApp:
 			frame = ttk.Frame(self.grid_frame, padding=8, style='Card.TFrame')
 			frame.grid(row=row, column=col, padx=pad, pady=pad, sticky='n')
 			frame.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
+			# Right-click anywhere on the card to show context menu
+			def _on_right_click(e, r=rec):
+				self._show_item_context_menu(e, r)
+			frame.bind('<Button-3>', _on_right_click)
 			# Hover highlight
 			def _on_enter(e, rid=rec.id, f=frame):
 				style = ttk.Style()
@@ -1283,10 +1289,12 @@ class KeyTaggerApp:
 			img_container.columnconfigure(0, weight=1)
 			# Clicking anywhere on the image area selects the item
 			img_container.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
+			img_container.bind('<Button-3>', _on_right_click)
 
 			img_label = ttk.Label(img_container)
 			img_label.grid(row=0, column=0, sticky='nsew')
 			img_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
+			img_label.bind('<Button-3>', _on_right_click)
 			# Fallbacks: show original image if available; audio uses placeholder
 			if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
 				thumb_path = rec.file_path
@@ -1525,6 +1533,7 @@ class KeyTaggerApp:
 			
 			name_canvas.bind('<Configure>', _draw_name_overlay)
 			name_canvas.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
+			name_canvas.bind('<Button-3>', _on_right_click)
 
 			self._update_card_style(frame, rec.id)
 
@@ -2736,6 +2745,60 @@ class KeyTaggerApp:
 			else:
 				# Linux and others: use xdg-open
 				subprocess.Popen(['xdg-open', file_path])
+		except Exception:
+			pass
+
+	def _reveal_in_explorer(self, file_path: str) -> None:
+		"""Reveal the given file in the system file explorer."""
+		if not file_path or not os.path.exists(file_path):
+			return
+		try:
+			if sys.platform.startswith('win'):
+				# Windows: open File Explorer with the file selected
+				subprocess.Popen(['explorer', '/select,', os.path.abspath(file_path)])
+			elif sys.platform == 'darwin':
+				# macOS: reveal in Finder
+				subprocess.Popen(['open', '-R', file_path])
+			else:
+				# Linux/others: open containing folder
+				folder = os.path.dirname(os.path.abspath(file_path)) or '.'
+				subprocess.Popen(['xdg-open', folder])
+		except Exception:
+			pass
+
+	def _on_viewer_right_click(self, event: tk.Event) -> None:
+		"""Right-click handler for the large viewer image."""
+		try:
+			rec = self._find_record_by_id(self.current_view_id)
+			if rec:
+				self._show_item_context_menu(event, rec)
+		except Exception:
+			pass
+
+	def _show_item_context_menu(self, event: tk.Event, rec: MediaRecord) -> None:
+		"""Show right-click context menu for a media item."""
+		try:
+			if not rec or not getattr(rec, 'file_path', None):
+				return
+			menu = tk.Menu(self.root, tearoff=0)
+			# Dark/light styling
+			bg = self.palette.get('side_bg', '#111827') if self.dark_mode else '#ffffff'
+			fg = self.palette.get('text', '#f9fafb') if self.dark_mode else '#111827'
+			active_bg = self.palette.get('card_hover_bg', '#1f2937') if self.dark_mode else '#e5e7eb'
+			active_fg = fg
+			try:
+				menu.configure(background=bg, foreground=fg, activebackground=active_bg, activeforeground=active_fg)
+			except Exception:
+				pass
+			menu.add_command(
+				label='Open in Explorer',
+				command=lambda p=rec.file_path: self._reveal_in_explorer(p),
+			)
+			# Popup at cursor position
+			try:
+				menu.tk_popup(event.x_root, event.y_root)
+			finally:
+				menu.grab_release()
 		except Exception:
 			pass
 
