@@ -297,6 +297,7 @@ class KeyTaggerApp:
 		self._thumb_apply_after_id: Optional[str] = None
 		# Track selected tags for filtering
 		self.selected_filter_tags: Set[str] = set()
+		self.show_untagged_only: bool = False
 		# Viewing mode state
 		self.view_mode: bool = False
 		self.current_view_id: Optional[int] = None
@@ -1059,6 +1060,20 @@ class KeyTaggerApp:
 			records, total = self.db.query_media(required_tags=required_tags, search_text=None, limit=500, offset=0)
 			if root_dir:
 				records = [r for r in records if os.path.abspath(r.root_dir) == os.path.abspath(root_dir)]
+		
+		# Filter for untagged files if requested
+		if self.show_untagged_only:
+			untagged_records = []
+			for rec in records:
+				try:
+					tags = self.db.get_media_tags(int(rec.id))
+					if not tags:
+						untagged_records.append(rec)
+				except Exception:
+					# If we can't get tags, assume untagged
+					untagged_records.append(rec)
+			records = untagged_records
+		
 		self.records = records
 		if preserve_selection:
 			try:
@@ -1083,6 +1098,11 @@ class KeyTaggerApp:
 				self._update_tagging_image()
 
 	def apply_filters(self) -> None:
+		# If manual tags are entered in the filter box, clear the untagged filter
+		tags_text = (self.filter_tags_var.get() or '').strip()
+		if tags_text and self.show_untagged_only:
+			self.show_untagged_only = False
+			self._render_hotkey_list()
 		self.refresh_records()
 
 	def _on_thumb_size_change(self, value: object) -> None:
@@ -2813,6 +2833,17 @@ class KeyTaggerApp:
 			return
 		for w in self.hotkey_list_frame.winfo_children():
 			w.destroy()
+		
+		# Add "Show Untagged" button at the top
+		untagged_frame = ttk.Frame(self.hotkey_list_frame, style='Side.TFrame')
+		untagged_frame.pack(fill='x', pady=(0, 10))
+		
+		button_text = "✓ Untagged Files" if self.show_untagged_only else "Show Untagged Files"
+		button_style = 'Primary.TButton' if self.show_untagged_only else 'Small.TButton'
+		btn_untagged = ttk.Button(untagged_frame, text=button_text, style=button_style, 
+								   command=self._toggle_untagged_filter)
+		btn_untagged.pack(fill='x', padx=2)
+		
 		# Gather all tags from DB
 		try:
 			all_tags = self.db.all_tags()
@@ -3558,12 +3589,29 @@ class KeyTaggerApp:
 		if checked:
 			# Add tag to filter
 			self.selected_filter_tags.add(tag)
+			# Clear untagged filter when selecting tags
+			if self.show_untagged_only:
+				self.show_untagged_only = False
 		else:
 			# Remove tag from filter
 			self.selected_filter_tags.discard(tag)
 		
 		# Update the filter and refresh
 		self._apply_tag_filter()
+
+	def _toggle_untagged_filter(self) -> None:
+		"""Toggle the filter to show only untagged files."""
+		self.show_untagged_only = not self.show_untagged_only
+		
+		if self.show_untagged_only:
+			# Clear tag filters when showing untagged
+			self.selected_filter_tags.clear()
+			self.filter_tags_var.set('')
+			self.filter_match_all_var.set(False)
+		
+		# Refresh the display
+		self._render_hotkey_list()
+		self.apply_filters()
 
 	def _apply_tag_filter(self) -> None:
 		"""Apply the selected tag filters to show only matching files."""
