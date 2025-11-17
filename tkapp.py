@@ -1376,6 +1376,11 @@ class KeyTaggerApp:
 	def _update_tagging_image(self) -> None:
 		if not self.tagging_mode:
 			return
+		# Increment session to invalidate stale async updates from previous media
+		try:
+			self._viewer_session += 1
+		except Exception:
+			self._viewer_session = int(self._viewer_session) + 1 if isinstance(self._viewer_session, int) else 1
 		# Render current record similarly to viewing mode but scaled to occupy most of the window
 		rec = self._find_record_by_id(self.current_view_id)
 		if not rec:
@@ -2709,7 +2714,7 @@ class KeyTaggerApp:
 			badge_frame.pack(side='left', padx=6, pady=4)
 			
 			# Create canvas with rounded rectangle
-			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0)
+			canvas = tk.Canvas(badge_frame, width=1, height=1, bg='#0a0f1a' if self.dark_mode else self.palette['bg'], highlightthickness=0, cursor='hand2')
 			canvas.pack()
 			
 			# Measure text size
@@ -2717,9 +2722,10 @@ class KeyTaggerApp:
 			text_width = font.measure(t.upper())
 			text_height = font.metrics('linespace')
 			
-			# Badge dimensions with padding
+			# Badge dimensions with padding (extra space for X button)
 			pad_x, pad_y = 16, 10
-			badge_width = text_width + (pad_x * 2)
+			x_button_width = 20  # Space for X button
+			badge_width = text_width + (pad_x * 2) + x_button_width
 			badge_height = text_height + (pad_y * 2)
 			
 			canvas.config(width=badge_width, height=badge_height)
@@ -2727,15 +2733,44 @@ class KeyTaggerApp:
 			# Draw rounded rectangle
 			radius = 8
 			bg_color = self.palette['primary']
-			canvas.create_oval(0, 0, radius*2, radius*2, fill=bg_color, outline=bg_color)
-			canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=bg_color, outline=bg_color)
-			canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=bg_color, outline=bg_color)
-			canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=bg_color, outline=bg_color)
-			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=bg_color, outline=bg_color)
-			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=bg_color, outline=bg_color)
+			canvas.create_oval(0, 0, radius*2, radius*2, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_oval(badge_width-radius*2, 0, badge_width, radius*2, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_oval(0, badge_height-radius*2, radius*2, badge_height, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_oval(badge_width-radius*2, badge_height-radius*2, badge_width, badge_height, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_rectangle(radius, 0, badge_width-radius, badge_height, fill=bg_color, outline=bg_color, tags='bg')
+			canvas.create_rectangle(0, radius, badge_width, badge_height-radius, fill=bg_color, outline=bg_color, tags='bg')
 			
-			# Draw text centered
-			canvas.create_text(badge_width//2, badge_height//2, text=t.upper(), fill='#ffffff', font=font)
+			# Draw text (shifted left to make room for X)
+			canvas.create_text((badge_width - x_button_width)//2, badge_height//2, text=t.upper(), fill='#ffffff', font=font, tags='text')
+			
+			# Create X button (hidden by default, shown on hover)
+			x_size = 12
+			x_center_x = badge_width - x_button_width//2
+			x_center_y = badge_height//2
+			x_btn_id = canvas.create_text(x_center_x, x_center_y, text='×', fill='#ffffff', font=('Segoe UI', 18, 'bold'), tags='x_button', state='hidden')
+			
+			# Hover handlers to show/hide X button
+			def on_enter(event, c=canvas):
+				c.itemconfig('x_button', state='normal')
+			
+			def on_leave(event, c=canvas):
+				c.itemconfig('x_button', state='hidden')
+			
+			# Click handler to remove tag
+			def on_click(event, tag_name=t, c=canvas):
+				if self.current_view_id is not None:
+					try:
+						self.db.remove_media_tags(int(self.current_view_id), [tag_name])
+						# Refresh tags display
+						self._render_tagging_tags()
+						# Refresh gallery to show tag removal
+						self.refresh_records(preserve_selection=True)
+					except Exception:
+						pass
+			
+			canvas.bind('<Enter>', on_enter)
+			canvas.bind('<Leave>', on_leave)
+			canvas.bind('<Button-1>', on_click)
 
 	def _on_tagging_entry_key(self, event: tk.Event):  # type: ignore[override]
 		# Prevent nav keys from inserting characters while the entry is focused
@@ -2744,11 +2779,9 @@ class KeyTaggerApp:
 			ks = (event.keysym or '').lower()
 			if k in [self.tag_prev_key, self.tag_next_key]:
 				self._navigate(-1 if k == self.tag_prev_key else 1)
-				self._update_tagging_image()
 				return 'break'
 			if ks in ['left', 'right']:
 				self._navigate(-1 if ks == 'left' else 1)
-				self._update_tagging_image()
 				return 'break'
 		except Exception:
 			return None
@@ -2760,7 +2793,6 @@ class KeyTaggerApp:
 				self._navigate(-1)
 			else:
 				self._navigate(1)
-			self._update_tagging_image()
 			return 'break'
 		except Exception:
 			return 'break'
@@ -3389,7 +3421,11 @@ class KeyTaggerApp:
 			self.current_view_id = self.records[next_idx].id
 			self.selected_ids = {int(self.current_view_id)}
 			self._refresh_card_styles()
-			self._update_viewer_image()
+			# Update the appropriate viewer based on mode
+			if self.tagging_mode:
+				self._update_tagging_image()
+			else:
+				self._update_viewer_image()
 			self._scroll_selected_into_view()
 		except Exception:
 			pass
@@ -3410,7 +3446,6 @@ class KeyTaggerApp:
 			if self.tagging_mode and getattr(self, 'tagging_entry', None) and (self.tagging_entry.focus_get() is self.tagging_entry):
 				if k in [self.tag_prev_key, self.tag_next_key]:
 					self._navigate(-1 if k == self.tag_prev_key else 1)
-					self._update_tagging_image()
 				return
 		except Exception:
 			pass
@@ -3421,7 +3456,6 @@ class KeyTaggerApp:
 		# In tagging mode, use assignable keys to navigate
 		if self.tagging_mode and k in [self.tag_prev_key, self.tag_next_key]:
 			self._navigate(-1 if k == self.tag_prev_key else 1)
-			self._update_tagging_image()
 			return
 		tag = self.hotkeys.get(k)
 		if not tag:
@@ -3431,8 +3465,6 @@ class KeyTaggerApp:
 	def on_arrow_left(self, event: tk.Event) -> None:
 		if self.view_mode or self.tagging_mode:
 			self._navigate(-1)
-			if self.tagging_mode:
-				self._update_tagging_image()
 		else:
 			# Regular gallery mode: navigate grid
 			self._navigate_gallery_grid('left')
@@ -3440,8 +3472,6 @@ class KeyTaggerApp:
 	def on_arrow_right(self, event: tk.Event) -> None:
 		if self.view_mode or self.tagging_mode:
 			self._navigate(1)
-			if self.tagging_mode:
-				self._update_tagging_image()
 		else:
 			# Regular gallery mode: navigate grid
 			self._navigate_gallery_grid('right')
