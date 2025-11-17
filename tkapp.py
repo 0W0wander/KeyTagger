@@ -886,6 +886,8 @@ class KeyTaggerApp:
 		self.root.bind('<Control-KeyPress>', self.on_ctrl_key)
 		self.root.bind('<Left>', self.on_arrow_left)
 		self.root.bind('<Right>', self.on_arrow_right)
+		self.root.bind('<Up>', self.on_arrow_up)
+		self.root.bind('<Down>', self.on_arrow_down)
 		self.root.bind('<Delete>', self.on_delete_key)
 
 	def pick_folder(self) -> None:
@@ -1107,11 +1109,26 @@ class KeyTaggerApp:
 		frame.configure(style=style_name)
 
 	def toggle_view_mode(self) -> None:
+		# Remember current item for scrolling back to it when exiting
+		item_to_scroll_to = self.current_view_id
+		
 		self.view_mode = not self.view_mode
 		try:
 			self.view_toggle_btn.configure(text=('Exit Viewing Mode' if self.view_mode else 'Enter Viewing Mode'))
 		except Exception:
 			pass
+		
+		# Show/hide mode toggle buttons based on current mode
+		try:
+			if self.view_mode:
+				# In viewing mode: hide "Enter Tagging Mode" button
+				self.tagging_toggle_btn.pack_forget()
+			else:
+				# Not in viewing mode: show "Enter Tagging Mode" button
+				self.tagging_toggle_btn.pack(fill='x', pady=(6, 0))
+		except Exception:
+			pass
+		
 		self._apply_view_mode_layout()
 		self._cols = self._compute_columns(self.canvas.winfo_width() or int(self._thumb_px) * 2)
 		# Re-render grid to ensure all thumbnails exist in horizontal strip
@@ -1130,6 +1147,9 @@ class KeyTaggerApp:
 					self.current_view_id = self.records[0].id if self.records else None
 			self._update_viewer_image()
 			self._scroll_selected_into_view()
+		else:
+			# Exiting viewing mode: scroll to the item in gallery
+			self.root.after(100, lambda: self._scroll_to_item_in_gallery(item_to_scroll_to))
 
 	def _apply_view_mode_layout(self) -> None:
 		self.force_cols = None
@@ -1170,7 +1190,11 @@ class KeyTaggerApp:
 			pass
 
 	def toggle_tagging_mode(self) -> None:
+		# Remember current item for scrolling back to it when exiting
+		item_to_scroll_to = self.current_view_id
+		
 		# Disable viewing mode if active
+		was_in_viewing_mode = self.view_mode
 		if self.view_mode:
 			self.view_mode = False
 			try:
@@ -1183,6 +1207,22 @@ class KeyTaggerApp:
 			self.tagging_toggle_btn.configure(text=('Exit Tagging Mode' if self.tagging_mode else 'Enter Tagging Mode'))
 		except Exception:
 			pass
+		
+		# Show/hide mode toggle buttons based on current mode
+		try:
+			if self.tagging_mode:
+				# In tagging mode: hide "Enter Viewing Mode" button
+				self.view_toggle_btn.pack_forget()
+				# If we were in viewing mode, make sure tagging button gets shown
+				if was_in_viewing_mode:
+					self.tagging_toggle_btn.pack_forget()
+					self.tagging_toggle_btn.pack(fill='x', pady=(6, 0))
+			else:
+				# Not in tagging mode: show "Enter Viewing Mode" button
+				self.view_toggle_btn.pack(fill='x', pady=(8, 0))
+		except Exception:
+			pass
+		
 		self._apply_tagging_mode_layout()
 		if self.tagging_mode:
 			# Initialize current item if needed: prefer an image, then any with thumbnail, else first
@@ -1216,6 +1256,9 @@ class KeyTaggerApp:
 				self.tagging_entry.focus_set()
 			except Exception:
 				pass
+		else:
+			# Exiting tagging mode: scroll to the item in gallery
+			self.root.after(100, lambda: self._scroll_to_item_in_gallery(item_to_scroll_to))
 
 	def _apply_tagging_mode_layout(self) -> None:
 		try:
@@ -2051,6 +2094,21 @@ class KeyTaggerApp:
 					self.root.after(0, self._restart_video_audio, 0.0, session)
 				except Exception:
 					pass
+				
+				# Cache dimensions - only update every 30 frames to avoid expensive UI queries
+				cached_avail_w, cached_avail_h = 800, 500
+				cached_canvas_size = None
+				cached_scale_params = None
+				frame_count_for_dimension_update = 0
+				dimension_update_interval = 30
+				
+				# Get initial dimensions once
+				try:
+					cached_avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+					cached_avail_h = max(200, int(self.root.winfo_height() * 0.55))
+				except Exception:
+					cached_avail_w, cached_avail_h = 800, 500
+				
 				while not stop_event.is_set():
 					# Apply pending seek
 					if self._video_seek_to_frame is not None:
@@ -2059,62 +2117,103 @@ class KeyTaggerApp:
 							self._video_seek_to_frame = None
 						cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, seek_frame))
 						self._video_current_frame = max(0, seek_frame)
+						# Reset clock after seek to prevent frame skipping
+						self._video_clock_start = time.monotonic()
+						self._video_clock_offset = float(seek_frame) / fps
 					# Handle pause
 					if self._video_pause:
 						time.sleep(0.05)
+						# Adjust clock while paused
+						self._video_clock_start = time.monotonic()
+						self._video_clock_offset = float(self._video_current_frame) / fps
 						continue
+					
+					# Start timing for this frame
+					frame_start_time = time.monotonic()
+					
 					# Real-time sync: compute target frame from clock
 					try:
 						elapsed = float(time.monotonic() - self._video_clock_start)
 						media_pos = float(self._video_clock_offset + max(0.0, elapsed))
 						desired_frame = int(media_pos * fps)
 						cur_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame)
-						if desired_frame > cur_frame + 1:
+						# Skip frames if we're falling behind (more than 2 frames)
+						if desired_frame > cur_frame + 2:
 							cap.set(cv2.CAP_PROP_POS_FRAMES, desired_frame)
 							self._video_current_frame = desired_frame
 					except Exception:
 						pass
+					
 					ok, frame = cap.read()
 					if not ok:
 						break
-					# Convert BGR to RGB
-					frame_rgb = frame[:, :, ::-1]
+					
+					# Update dimensions periodically (not every frame to save performance)
+					frame_count_for_dimension_update += 1
+					if frame_count_for_dimension_update >= dimension_update_interval:
+						try:
+							new_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
+							new_h = max(200, int(self.root.winfo_height() * 0.55))
+							if new_w != cached_avail_w or new_h != cached_avail_h:
+								cached_avail_w, cached_avail_h = new_w, new_h
+								cached_scale_params = None  # Force recalculation
+						except Exception:
+							pass
+						frame_count_for_dimension_update = 0
+					
+					# Convert BGR to RGB using cv2 (faster than numpy slice)
+					frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 					img = Image.fromarray(frame_rgb)
-					# Determine available space dynamically and letterbox
-					try:
-						self.viewer_container.update_idletasks()
-						avail_w = max(200, int(self.viewer_container.winfo_width() or self.canvas.winfo_width() or 800) - 16)
-						avail_h = max(200, int(self.root.winfo_height() * 0.55))
-					except Exception:
-						avail_w, avail_h = 800, 500
+					
+					# Calculate scaling parameters if needed
 					w, h = img.size
-					scale = min(avail_w / max(w, 1), avail_h / max(h, 1))
-					new_w = max(1, int(w * scale))
-					new_h = max(1, int(h * scale))
-					resized = img.resize((new_w, new_h), Image.LANCZOS)
-					canvas_img = Image.new('RGB', (max(avail_w, new_w), max(avail_h, new_h)), color=(0, 0, 0))
-					offset = ((canvas_img.width - new_w) // 2, (canvas_img.height - new_h) // 2)
+					if cached_scale_params is None or cached_scale_params[0] != (w, h):
+						scale = min(cached_avail_w / max(w, 1), cached_avail_h / max(h, 1))
+						new_w = max(1, int(w * scale))
+						new_h = max(1, int(h * scale))
+						canvas_w = max(cached_avail_w, new_w)
+						canvas_h = max(cached_avail_h, new_h)
+						offset = ((canvas_w - new_w) // 2, (canvas_h - new_h) // 2)
+						cached_scale_params = ((w, h), scale, new_w, new_h, canvas_w, canvas_h, offset)
+						cached_canvas_size = (canvas_w, canvas_h)
+					
+					_, scale, new_w, new_h, canvas_w, canvas_h, offset = cached_scale_params
+					
+					# Use faster BILINEAR resampling for video (LANCZOS is too slow)
+					resized = img.resize((new_w, new_h), Image.BILINEAR)
+					canvas_img = Image.new('RGB', cached_canvas_size, color=(0, 0, 0))
 					canvas_img.paste(resized, offset)
 					photo = ImageTk.PhotoImage(canvas_img)
+					
 					# Schedule UI update in main thread, guarded by session
 					self.root.after(0, self._set_viewer_photo_if_current, photo, session)
-					# Update time/seek UI
+					
+					# Update time/seek UI (only every 3 frames to reduce overhead)
+					if frame_count_for_dimension_update % 3 == 0:
+						try:
+							pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame or 0)
+							self._video_current_frame = pos_frames
+							pos_sec = float(pos_frames) / float(fps)
+							self.root.after(0, self._update_video_seek_ui_if_current, pos_sec, session)
+						except Exception:
+							pass
+					else:
+						# Just update frame counter without UI update
+						try:
+							self._video_current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame or 0)
+						except Exception:
+							pass
+					
+					# Calculate precise sleep time based on actual frame processing time
 					try:
-						pos_frames = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or self._video_current_frame or 0)
-						self._video_current_frame = pos_frames
-						pos_sec = float(pos_frames) / float(fps)
-						self.root.after(0, self._update_video_seek_ui_if_current, pos_sec, session)
-					except Exception:
-						pass
-					# Sleep until the next frame time to throttle
-					try:
+						frame_process_time = time.monotonic() - frame_start_time
 						elapsed = float(time.monotonic() - self._video_clock_start)
 						media_pos = float(self._video_clock_offset + max(0.0, elapsed))
 						next_frame_time = float((self._video_current_frame + 1) / fps)
 						delay = max(0.0, next_frame_time - media_pos)
-						if delay > 0.02:
-							delay = 0.02
-						time.sleep(delay)
+						# Sleep for the calculated delay (no artificial cap)
+						if delay > 0.001:  # Only sleep if delay is meaningful (> 1ms)
+							time.sleep(delay)
 					except Exception:
 						time.sleep(interval)
 				cap.release()
@@ -3043,6 +3142,124 @@ class KeyTaggerApp:
 		except Exception:
 			pass
 
+	def _scroll_to_item_in_gallery(self, media_id: Optional[int] = None) -> None:
+		"""Scroll to a specific item in the normal gallery grid (not viewing mode).
+		Only scrolls if the item is not fully visible."""
+		try:
+			if self.view_mode or self.tagging_mode or not self.card_frames:
+				return
+			if media_id is None:
+				media_id = self.current_view_id
+			if media_id is None:
+				return
+			# Find index of the media_id
+			idx = 0
+			for i, rec in enumerate(self.records):
+				if int(rec.id) == int(media_id):
+					idx = i
+					break
+			frame = self.card_frames[idx]
+			self.grid_frame.update_idletasks()
+			
+			# Get frame position and dimensions
+			frame_top = int(frame.winfo_y())
+			frame_bottom = frame_top + int(frame.winfo_height())
+			
+			# Get current viewport dimensions
+			total_h = max(1, int(self.grid_frame.winfo_height()))
+			ch = max(1, int(self.canvas.winfo_height()))
+			
+			# Get current scroll position (in pixels)
+			try:
+				yview = self.canvas.yview()
+				viewport_top = int(yview[0] * total_h)
+				viewport_bottom = int(yview[1] * total_h)
+			except Exception:
+				viewport_top = 0
+				viewport_bottom = ch
+			
+			# Check if frame is fully visible
+			fully_visible = (frame_top >= viewport_top and frame_bottom <= viewport_bottom)
+			
+			if fully_visible:
+				# Item is fully visible, no need to scroll
+				return
+			
+			# Item is not fully visible, scroll to make it visible
+			if frame_top < viewport_top:
+				# Item is above viewport, scroll up to show it at the top
+				desired_top = max(0, frame_top - 10)  # 10px padding from top
+			else:
+				# Item is below viewport, scroll down to show it at the bottom
+				desired_top = max(0, frame_bottom - ch + 10)  # 10px padding from bottom
+			
+			# Convert to fraction and scroll
+			if total_h <= ch:
+				frac = 0.0
+			else:
+				frac = desired_top / float(max(1, total_h - ch))
+			self.canvas.yview_moveto(min(max(frac, 0.0), 1.0))
+		except Exception:
+			pass
+
+	def _navigate_gallery_grid(self, direction: str) -> None:
+		"""Navigate in the gallery grid (left/right/up/down) in regular gallery mode."""
+		try:
+			if not self.records or self.view_mode or self.tagging_mode:
+				return
+			
+			# Get current selection or default to first item
+			current_id = None
+			if self.selected_ids:
+				# Use the first selected item as current
+				current_id = next(iter(self.selected_ids))
+			
+			if current_id is None:
+				# No selection, select the first item
+				if self.records:
+					self.selected_ids = {self.records[0].id}
+					self.current_view_id = self.records[0].id
+					self._selection_anchor_id = self.records[0].id
+					self._refresh_card_styles()
+					self._scroll_to_item_in_gallery(self.records[0].id)
+				return
+			
+			# Find current index
+			current_idx = 0
+			for i, rec in enumerate(self.records):
+				if int(rec.id) == int(current_id):
+					current_idx = i
+					break
+			
+			# Calculate number of columns
+			cols = max(1, self._cols)
+			
+			# Calculate new index based on direction
+			new_idx = current_idx
+			if direction == 'left':
+				if current_idx % cols > 0:  # Not at leftmost column
+					new_idx = current_idx - 1
+			elif direction == 'right':
+				if current_idx % cols < cols - 1 and current_idx + 1 < len(self.records):  # Not at rightmost column
+					new_idx = current_idx + 1
+			elif direction == 'up':
+				if current_idx >= cols:  # Not in first row
+					new_idx = current_idx - cols
+			elif direction == 'down':
+				if current_idx + cols < len(self.records):  # Not in last row
+					new_idx = current_idx + cols
+			
+			# If we found a new position, update selection
+			if new_idx != current_idx and 0 <= new_idx < len(self.records):
+				new_id = self.records[new_idx].id
+				self.selected_ids = {new_id}
+				self.current_view_id = new_id
+				self._selection_anchor_id = new_id
+				self._refresh_card_styles()
+				self._scroll_to_item_in_gallery(new_id)
+		except Exception:
+			pass
+
 	def _navigate(self, delta: int) -> None:
 		if not self.records:
 			return
@@ -3101,12 +3318,34 @@ class KeyTaggerApp:
 			self._navigate(-1)
 			if self.tagging_mode:
 				self._update_tagging_image()
+		else:
+			# Regular gallery mode: navigate grid
+			self._navigate_gallery_grid('left')
 
 	def on_arrow_right(self, event: tk.Event) -> None:
 		if self.view_mode or self.tagging_mode:
 			self._navigate(1)
 			if self.tagging_mode:
 				self._update_tagging_image()
+		else:
+			# Regular gallery mode: navigate grid
+			self._navigate_gallery_grid('right')
+
+	def on_arrow_up(self, event: tk.Event) -> None:
+		if self.view_mode or self.tagging_mode:
+			# In view/tagging mode, don't handle up arrow (no circular navigation)
+			pass
+		else:
+			# Regular gallery mode: navigate grid
+			self._navigate_gallery_grid('up')
+
+	def on_arrow_down(self, event: tk.Event) -> None:
+		if self.view_mode or self.tagging_mode:
+			# In view/tagging mode, don't handle down arrow (no circular navigation)
+			pass
+		else:
+			# Regular gallery mode: navigate grid
+			self._navigate_gallery_grid('down')
 
 	def on_delete_key(self, event: tk.Event) -> None:
 		# Prevent deletion when typing in entry fields
