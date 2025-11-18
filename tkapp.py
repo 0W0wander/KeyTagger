@@ -429,30 +429,25 @@ class KeyTaggerApp:
 		# General tab content
 		folder_row = ttk.Frame(self.general_tab_frame, style='Side.TFrame')
 		folder_row.pack(fill='x', pady=(0, 8))
-		pick_btn = ttk.Button(folder_row, text='Pick Folder', command=self.pick_folder, style='Primary.TButton')
+		# Pick/Scan folder buttons in a single row
+		pick_btn = ttk.Button(folder_row, text='Pick Folder', command=self.pick_folder, style='FolderPrimary.TButton')
 		pick_btn.pack(side='left')
+		scan_btn = ttk.Button(folder_row, text='Scan Folder', command=self.scan_folder, style='FolderAccent.TButton')
+		scan_btn.pack(side='left', padx=(6, 0), expand=True, fill='x')
+		# Folder path entry below
 		folder_entry = ttk.Entry(self.general_tab_frame, textvariable=self.folder_var, width=40)
 		folder_entry.pack(fill='x', pady=(6, 8))
-		scan_btn = ttk.Button(self.general_tab_frame, text='Scan Folder', command=self.scan_folder, style='Accent.TButton')
-		scan_btn.pack(fill='x')
 
-		# Tag filter (comma-separated). Default to OR behavior; a toggle switches to AND
-		filter_lbl = ttk.Label(self.general_tab_frame, text='Filter by tags (comma-separated)', style='Muted.TLabel')
-		filter_lbl.pack(anchor='w', pady=(10, 2))
+		# Hidden tag filter state (used by sidebar tag checkboxes / untagged button)
+		# We keep the variables but no longer show the old manual filter UI.
 		self.filter_tags_var = tk.StringVar()
-		filter_entry = ttk.Entry(self.general_tab_frame, textvariable=self.filter_tags_var, width=40)
-		filter_entry.pack(fill='x')
 		self.filter_match_all_var = tk.BooleanVar(value=False)  # False = OR (default)
-		chk_all = ttk.Checkbutton(self.general_tab_frame, text='Match ALL tags (AND)', variable=self.filter_match_all_var, command=self.apply_filters)
-		chk_all.pack(anchor='w', pady=(4, 8))
-		btn_apply_filter = ttk.Button(self.general_tab_frame, text='Apply Filter', command=self.apply_filters, style='Small.TButton')
-		btn_apply_filter.pack(anchor='w')
 
 		# Thumbnail size slider
 		sz_label = ttk.Label(self.general_tab_frame, text='Thumbnail size', style='Muted.TLabel')
 		sz_label.pack(anchor='w', pady=(10, 2))
 		self.thumb_size_var = tk.IntVar(value=int(self._thumb_px))
-		sz = ttk.Scale(self.general_tab_frame, from_=120, to=512, orient='horizontal', variable=self.thumb_size_var, command=self._on_thumb_size_change)
+		sz = ttk.Scale(self.general_tab_frame, from_=120, to=512, orient='horizontal', variable=self.thumb_size_var, command=self._on_thumb_size_change, style='Horizontal.ThumbSize.TScale')
 		sz.set(self._thumb_px)
 		sz.pack(fill='x')
 
@@ -530,9 +525,21 @@ class KeyTaggerApp:
 		btn_apply_nav.pack(fill='x')
 		self.tagging_nav_frame.pack_forget()
 		
-		# Pack initial tab
-		self.general_tab_frame.pack(fill='both', expand=True)
-		self._update_tab_buttons_style()
+		# Pack initial tab and ensure General is selected/highlighted
+		self._switch_sidebar_tab('general')
+		# Force geometry update and draw the initial tab highlight
+		try:
+			self.root.update_idletasks()
+			self._update_tab_buttons_style()
+		except Exception:
+			pass
+		# Run additional style updates after layout to ensure the rounded highlight draws
+		# if the immediate call above was too early
+		try:
+			self.root.after(50, self._update_tab_buttons_style)
+			self.root.after(150, self._update_tab_buttons_style)
+		except Exception:
+			pass
 
 		# Main area with scrollable canvas (gallery)
 		main = ttk.Frame(self.root, style='App.TFrame')
@@ -679,7 +686,11 @@ class KeyTaggerApp:
 
 	def _update_tab_buttons_style(self) -> None:
 		"""Update tab button styles to show active/inactive state with rounded corners."""
-		active_bg = self.palette.get('primary', '#2563eb')
+		# Use a darker, non-blue accent color for the active tab (dark purple in dark mode, warm tone in light mode)
+		if self.dark_mode:
+			active_bg = '#4c1d95'  # dark purple
+		else:
+			active_bg = '#9a3412'  # warm dark orange
 		active_fg = '#ffffff'
 		inactive_bg = self.palette.get('side_bg', '#ffffff')
 		inactive_fg = self.palette.get('muted', '#6b7280')
@@ -690,19 +701,26 @@ class KeyTaggerApp:
 		def draw_rounded_rect(canvas, bg_color, fg_color, text_id):
 			"""Draw a rounded rectangle on the canvas."""
 			canvas.delete('rounded_bg')
-			# Use configured width or actual width, whichever is available
-			w = canvas.winfo_reqwidth() if canvas.winfo_reqwidth() > 1 else canvas.winfo_width()
-			h = canvas.winfo_height()
+			# Use configured dimensions first (from canvas creation), then actual dimensions, then fallback
+			w = canvas.winfo_reqwidth()
 			if w < 1:
-				w = 80 if canvas == self.general_tab_btn else 120  # Fallback to default widths
-			if w > 1 and h > 1:
-				# Draw rounded rectangle using helper function
-				create_rounded_rectangle(canvas, 2, 2, w-2, h-2, radius=radius,
-					fill=bg_color, outline='', tags='rounded_bg')
-				# Update text color
-				canvas.itemconfig(text_id, fill=fg_color)
-				# Ensure text is on top
-				canvas.tag_raise(text_id)
+				w = canvas.winfo_width()
+			if w < 1:
+				w = 80 if canvas == self.general_tab_btn else 120
+			
+			h = canvas.winfo_reqheight()
+			if h < 1:
+				h = canvas.winfo_height()
+			if h < 1:
+				h = 32  # Default height from canvas creation
+			
+			# Draw rounded rectangle using helper function
+			create_rounded_rectangle(canvas, 2, 2, w-2, h-2, radius=radius,
+				fill=bg_color, outline='', tags='rounded_bg')
+			# Update text color
+			canvas.itemconfig(text_id, fill=fg_color)
+			# Ensure text is on top
+			canvas.tag_raise(text_id)
 		
 		try:
 			if current_tab == 'general':
@@ -852,6 +870,24 @@ class KeyTaggerApp:
 				background=[('active', scroll_thumb_active), ('pressed', scroll_thumb_active)],
 			)
 
+			# Thumbnail size scale styling - darker bar in dark mode
+			try:
+				style.layout('Horizontal.ThumbSize.TScale', style.layout('Horizontal.TScale'))
+			except Exception:
+				pass
+			style.configure(
+				'Horizontal.ThumbSize.TScale',
+				troughcolor=scroll_trough,
+				background=scroll_thumb,
+				bordercolor=scroll_trough,
+				lightcolor=scroll_thumb,
+				darkcolor=scroll_thumb,
+			)
+			style.map(
+				'Horizontal.ThumbSize.TScale',
+				background=[('active', scroll_thumb_active), ('pressed', scroll_thumb_active)],
+			)
+
 		# Buttons
 		style.configure('TButton', padding=(10, 6))
 		style.configure('Primary.TButton', background=self.palette['primary'], foreground='#ffffff')
@@ -861,6 +897,27 @@ class KeyTaggerApp:
 		style.configure('Small.TButton', padding=(6, 2))
 		style.configure('HK.TCheckbutton', background=self.palette['side_bg'], foreground=self.palette['text'])
 		style.configure('HKHint.TLabel', background=self.palette['side_bg'], foreground=self.palette['key_hint'])
+
+		# Folder buttons (Pick / Scan) - very dark purple tones
+		# Pick Folder: darker purple, Scan Folder: slightly lighter purple
+		style.configure(
+			'FolderPrimary.TButton',
+			background='#4c1d95',  # very dark purple
+			foreground='#ffffff',
+		)
+		style.map(
+			'FolderPrimary.TButton',
+			background=[('active', '#5b21b6'), ('pressed', '#5b21b6')],
+		)
+		style.configure(
+			'FolderAccent.TButton',
+			background='#6d28d9',  # slightly lighter purple
+			foreground='#ffffff',
+		)
+		style.map(
+			'FolderAccent.TButton',
+			background=[('active', '#7c3aed'), ('pressed', '#7c3aed')],
+		)
 
 		# Create rounded-corner button skins using 9-patch images
 		self._install_rounded_button_theme(style)
@@ -879,6 +936,12 @@ class KeyTaggerApp:
 			style.map('Small.TButton', background=[('active', '#4b5563'), ('pressed', '#4b5563')])
 			style.configure('HK.TCheckbutton', background=self.palette['side_bg'], foreground=self.palette['text'])
 			style.configure('HKHint.TLabel', background=self.palette['side_bg'], foreground=self.palette['key_hint'])
+
+			# Darker (but still colorful) variants for folder buttons in dark mode
+			style.configure('FolderPrimary.TButton', background='#4c1d95', foreground='#e5e7eb')
+			style.map('FolderPrimary.TButton', background=[('active', '#5b21b6'), ('pressed', '#5b21b6')])
+			style.configure('FolderAccent.TButton', background='#6d28d9', foreground='#e5e7eb')
+			style.map('FolderAccent.TButton', background=[('active', '#7c3aed'), ('pressed', '#7c3aed')])
 
 		# Cards and tags
 		style.configure('Card.TFrame', background=self.palette['card_bg'])
