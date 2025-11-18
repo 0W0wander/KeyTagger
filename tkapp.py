@@ -564,9 +564,10 @@ class KeyTaggerApp:
 		self.viewer_container = ttk.Frame(self.root, style='Viewer.TFrame')
 		self.viewer_container.grid(row=1, column=1, sticky='nsew')
 		self.viewer_container.columnconfigure(0, weight=1)
-		# Give tags (row 0) and viewer (row 1) vertical weight so tags can sit centered in the top half
-		self.viewer_container.rowconfigure(0, weight=1)
-		self.viewer_container.rowconfigure(1, weight=4)
+		# Give tags (row 0), textbox (row 1), and viewer (row 2) vertical weight
+		self.viewer_container.rowconfigure(0, weight=1)  # Tags frame
+		self.viewer_container.rowconfigure(1, weight=0)  # Textbox (fixed height)
+		self.viewer_container.rowconfigure(2, weight=4)  # Image viewer (main content)
 		self.root.rowconfigure(1, weight=0)
 		
 		# Tag list row (visible in tagging mode) - AT THE TOP
@@ -576,7 +577,7 @@ class KeyTaggerApp:
 		
 		# Frame to hold viewer label and open button overlay
 		self.viewer_image_frame = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
-		self.viewer_image_frame.grid(row=1, column=0, sticky='nsew', padx=12, pady=8)
+		self.viewer_image_frame.grid(row=2, column=0, sticky='nsew', padx=12, pady=8)
 		self.viewer_image_frame.columnconfigure(0, weight=1)
 		self.viewer_image_frame.rowconfigure(0, weight=1)
 		self.viewer_label = ttk.Label(self.viewer_image_frame, style='ViewerImage.TLabel')
@@ -589,7 +590,7 @@ class KeyTaggerApp:
 		self.viewer_open_btn.place_forget()  # Hide initially
 		# Video controls (hidden unless a video is selected)
 		self.video_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
-		self.video_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.video_controls.grid(row=3, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.video_controls.columnconfigure(1, weight=1)
 		self.video_play_btn = ttk.Button(self.video_controls, text='Pause', command=self._toggle_video_play, style='Small.TButton')
 		self.video_play_btn.grid(row=0, column=0, padx=(0, 8))
@@ -608,20 +609,20 @@ class KeyTaggerApp:
 		self.video_controls.grid_remove()
 		# GIF controls (hidden unless an animated GIF is selected)
 		self.gif_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
-		self.gif_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.gif_controls.grid(row=3, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.gif_play_btn = ttk.Button(self.gif_controls, text='Play', command=self._toggle_gif_play, style='Small.TButton')
 		self.gif_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.gif_controls.grid_remove()
 		# Audio controls (no autoplay). Simple play/pause button
 		self.audio_controls = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
-		self.audio_controls.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
+		self.audio_controls.grid(row=3, column=0, sticky='ew', padx=12, pady=(0, 10))
 		self.audio_play_btn = ttk.Button(self.audio_controls, text='Play Audio', command=self._toggle_audio_play, style='Small.TButton')
 		self.audio_play_btn.grid(row=0, column=0, padx=(0, 8))
 		self.audio_controls.grid_remove()
 		
-		# Tagging input row (only visible in tagging mode) - AT THE BOTTOM
+		# Tagging input row (only visible in tagging mode) - ABOVE THE IMAGE
 		self.tagging_input_frame = ttk.Frame(self.viewer_container, style='Viewer.TFrame')
-		self.tagging_input_frame.grid(row=3, column=0, sticky='ew', padx=16, pady=(8, 16))
+		self.tagging_input_frame.grid(row=1, column=0, sticky='ew', padx=16, pady=(8, 12))
 		self.tagging_input_frame.columnconfigure(0, weight=1)
 		# Modern sleek textbox with colors based on theme
 		entry_bg = '#1a202c' if self.dark_mode else '#ffffff'
@@ -3761,6 +3762,10 @@ class KeyTaggerApp:
 	def _on_tagging_entry_change(self, event: tk.Event) -> None:
 		# Update suggestions based on current text
 		try:
+			# Skip update for navigation keys to avoid resetting selection
+			if hasattr(event, 'keysym') and event.keysym in ('Up', 'Down', 'Left', 'Right', 'Tab', 'Return', 'Escape'):
+				return
+			
 			if not self.tagging_mode:
 				self._hide_tag_suggestions()
 				return
@@ -3847,6 +3852,7 @@ class KeyTaggerApp:
 			self._tag_suggest_list.selection_clear(0, tk.END)
 			self._tag_suggest_list.selection_set(idx)
 			self._tag_suggest_list.activate(idx)
+			self._tag_suggest_list.see(idx)  # Ensure the selected item is visible
 			return 'break'
 		except Exception:
 			return 'break'
@@ -3862,6 +3868,7 @@ class KeyTaggerApp:
 			self._tag_suggest_list.selection_clear(0, tk.END)
 			self._tag_suggest_list.selection_set(idx)
 			self._tag_suggest_list.activate(idx)
+			self._tag_suggest_list.see(idx)  # Ensure the selected item is visible
 			return 'break'
 		except Exception:
 			return 'break'
