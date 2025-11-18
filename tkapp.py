@@ -373,6 +373,9 @@ class KeyTaggerApp:
 		self.folder_var.set(default_dir)
 		self.refresh_records()
 		self._bind_hotkeys()
+		
+		# Apply title bar theme after UI is fully built to ensure it takes effect immediately
+		self.root.after(1, lambda: self._apply_windows_titlebar_theme(self.dark_mode))
 
 	def _build_ui(self) -> None:
 		self.root.geometry('1280x800')
@@ -1040,7 +1043,7 @@ class KeyTaggerApp:
 		self._apply_windows_titlebar_theme(self.dark_mode)
 		# Re-apply once the window is realized to ensure DWM picks it up
 		try:
-			self.root.after(50, lambda: self._apply_windows_titlebar_theme(self.dark_mode))
+			self.root.after(100, lambda: self._apply_windows_titlebar_theme(self.dark_mode))
 		except Exception:
 			pass
 
@@ -3186,6 +3189,11 @@ class KeyTaggerApp:
 			if not sys.platform.startswith('win'):
 				return
 			import ctypes
+			# Ensure window is realized before getting HWND
+			try:
+				self.root.update_idletasks()
+			except Exception:
+				pass
 			# Resolve the real top-level HWND for the Tk root (some Tk builds return a child HWND)
 			try:
 				hwnd = int(self.root.winfo_id())
@@ -3236,7 +3244,10 @@ class KeyTaggerApp:
 			# Nudge a non-client area repaint so the caption updates immediately
 			try:
 				RDW_FRAME = 0x0400
-				ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(hwnd), None, None, ctypes.c_uint(RDW_FRAME))
+				RDW_INVALIDATE = 0x0001
+				RDW_UPDATENOW = 0x0100
+				flags = RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW
+				ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(hwnd), None, None, ctypes.c_uint(flags))
 			except Exception:
 				pass
 		except Exception:
