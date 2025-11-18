@@ -626,23 +626,93 @@ class KeyTaggerApp:
 		# Modern sleek textbox with colors based on theme
 		entry_bg = '#1a202c' if self.dark_mode else '#ffffff'
 		entry_fg = '#f3f4f6' if self.dark_mode else '#111827'
-		entry_border = '#3b82f6' if self.dark_mode else '#2563eb'
-		entry_border_inactive = '#374151' if self.dark_mode else '#d1d5db'
+		# Very dark purple for border
+		entry_border = '#2d1b4e' if self.dark_mode else '#4c1d95'
+		entry_border_inactive = '#1e1533' if self.dark_mode else '#d1d5db'
+		
+		# Create a canvas container for rounded border effect
+		viewer_bg = self.palette.get('viewer_bg', '#111827' if self.dark_mode else '#ffffff')
+		self.tagging_entry_canvas = tk.Canvas(
+			self.tagging_input_frame,
+			height=50,
+			bg=viewer_bg,
+			highlightthickness=0
+		)
+		self.tagging_entry_canvas.grid(row=0, column=0, sticky='ew')
+		
+		# Create the entry with no border (we'll draw the border on canvas)
 		self.tagging_entry = tk.Entry(
-			self.tagging_input_frame, 
+			self.tagging_entry_canvas, 
 			textvariable=self.tag_input_var,
 			font=('Segoe UI', 13),
 			bg=entry_bg,
 			fg=entry_fg,
 			relief='flat',
-			highlightthickness=2,
-			highlightbackground=entry_border_inactive,
-			highlightcolor=entry_border,
+			highlightthickness=0,
+			borderwidth=0,
 			insertbackground=entry_fg,
 			selectbackground=self.palette['primary'],
-			selectforeground='#ffffff'
+			selectforeground='#ffffff',
+			width=50  # Initial width in characters
 		)
-		self.tagging_entry.grid(row=0, column=0, sticky='ew', ipady=12)
+		
+		# Store border colors for focus state changes
+		self.tagging_entry_border_active = entry_border
+		self.tagging_entry_border_inactive = entry_border_inactive
+		
+		# Function to draw rounded border
+		def draw_tagging_entry_border(is_focused=False):
+			canvas = self.tagging_entry_canvas
+			canvas.delete('border')
+			w = canvas.winfo_width()
+			h = canvas.winfo_height()
+			if w < 10:  # Not rendered yet, use update
+				canvas.update_idletasks()
+				w = canvas.winfo_width()
+				h = canvas.winfo_height()
+			if w < 10:
+				w = 400  # Fallback width
+			if h < 10:
+				h = 50  # Fallback height
+			
+			border_color = self.tagging_entry_border_active if is_focused else self.tagging_entry_border_inactive
+			# Draw rounded rectangle border (outline only)
+			create_rounded_rectangle(canvas, 2, 2, w-2, h-2, radius=8,
+				fill='', outline=border_color, width=2, tags='border')
+		
+		self._draw_tagging_entry_border = draw_tagging_entry_border
+		
+		# Place the entry on top of the canvas with padding (centered)
+		# We'll position and size it on resize
+		self.tagging_entry_window = self.tagging_entry_canvas.create_window(
+			0, 0, anchor='nw', window=self.tagging_entry
+		)
+		
+		# Bind to canvas resize to update entry size and position
+		def on_canvas_resize(event):
+			canvas = self.tagging_entry_canvas
+			canvas.update_idletasks()
+			w = canvas.winfo_width()
+			h = canvas.winfo_height()
+			if w < 10:
+				w = 400  # Fallback
+			if h < 10:
+				h = 50  # Fallback
+			# Position entry with padding and set its size to fill the canvas
+			padding = 8
+			entry_w = w - (2 * padding)
+			entry_h = h - (2 * padding)
+			# Update window position and size
+			canvas.coords(self.tagging_entry_window, padding, padding)
+			canvas.itemconfig(self.tagging_entry_window, width=entry_w, height=entry_h)
+			# Redraw border
+			self._draw_tagging_entry_border(self.tagging_entry.focus_get() == self.tagging_entry)
+		
+		self.tagging_entry_canvas.bind('<Configure>', on_canvas_resize)
+		
+		# Draw initial border and size entry after a delay to ensure layout is ready
+		self.root.after(100, lambda: on_canvas_resize(None))
+		self.root.after(150, lambda: self._draw_tagging_entry_border(False))
 		# Add placeholder text
 		self._tagging_placeholder = 'Type a tag and press Enter...'
 		self._tagging_placeholder_active = False
@@ -3086,6 +3156,25 @@ class KeyTaggerApp:
 			self._render_hotkey_list()
 		except Exception:
 			pass
+		# Update tagging entry border colors for new theme
+		try:
+			if hasattr(self, 'tagging_entry_canvas'):
+				entry_border = '#2d1b4e' if self.dark_mode else '#4c1d95'
+				entry_border_inactive = '#1e1533' if self.dark_mode else '#d1d5db'
+				self.tagging_entry_border_active = entry_border
+				self.tagging_entry_border_inactive = entry_border_inactive
+				# Update canvas background
+				viewer_bg = self.palette.get('viewer_bg', '#111827' if self.dark_mode else '#ffffff')
+				self.tagging_entry_canvas.configure(bg=viewer_bg)
+				# Update entry colors
+				entry_bg = '#1a202c' if self.dark_mode else '#ffffff'
+				entry_fg = '#f3f4f6' if self.dark_mode else '#111827'
+				self.tagging_entry.configure(bg=entry_bg, fg=entry_fg, insertbackground=entry_fg)
+				# Redraw border
+				if hasattr(self, '_draw_tagging_entry_border'):
+					self._draw_tagging_entry_border(self.tagging_entry.focus_get() == self.tagging_entry)
+		except Exception:
+			pass
 		# Ensure proper layout after render (in case canvas width changed recently)
 		self._layout_cards()
 
@@ -3401,11 +3490,17 @@ class KeyTaggerApp:
 	def _on_tagging_focus_in(self, event: tk.Event) -> None:
 		"""Handle focus in event for tagging entry."""
 		self._clear_tagging_placeholder()
+		# Redraw border with active color
+		if hasattr(self, '_draw_tagging_entry_border'):
+			self._draw_tagging_entry_border(is_focused=True)
 	
 	def _on_tagging_focus_out(self, event: tk.Event) -> None:
 		"""Handle focus out event for tagging entry."""
 		if not self.tag_input_var.get():
 			self._set_tagging_placeholder()
+		# Redraw border with inactive color
+		if hasattr(self, '_draw_tagging_entry_border'):
+			self._draw_tagging_entry_border(is_focused=False)
 
 	def _render_tagging_tags(self) -> None:
 		# Render modern large badges for current item's tags in tagging mode
