@@ -8,6 +8,8 @@ import subprocess
 import shutil
 import signal
 import atexit
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
 from PIL import Image, ImageTk
 try:
@@ -272,6 +274,16 @@ def build_audio_placeholder(size: int = THUMB_SIZE) -> Optional[str]:
 		return None
 
 
+def create_placeholder_image(size: int = THUMB_SIZE) -> ImageTk.PhotoImage:
+	"""Create a simple placeholder image for lazy loading."""
+	img = Image.new('RGB', (size, size), color=(50, 50, 55))
+	if ImageDraw is not None:
+		draw = ImageDraw.Draw(img)
+		# Draw a simple loading indicator
+		draw.rectangle([size//4, size//2-5, size*3//4, size//2+5], fill=(80, 80, 90))
+	return ImageTk.PhotoImage(img)
+
+
 class KeyTaggerApp:
 	def __init__(self, root: tk.Tk) -> None:
 		self.root = root
@@ -367,6 +379,16 @@ class KeyTaggerApp:
 		self._gif_pause: bool = False
 		# Toast notification window (single-instance)
 		self._toast_window: Optional[tk.Toplevel] = None
+		
+		# Virtual scrolling and lazy loading optimization
+		self._visible_range: Tuple[int, int] = (0, 0)  # Start and end indices of visible items
+		self._render_buffer: int = 5  # Number of extra rows to render above/below viewport
+		self._scroll_debounce_id: Optional[str] = None
+		self._thumbnail_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="thumb_loader")
+		self._thumbnail_load_queue: deque = deque()
+		self._loaded_thumbnails: Set[int] = set()  # Track which record IDs have loaded thumbnails
+		self._placeholder_photo: Optional[ImageTk.PhotoImage] = None
+		self._tags_cache: Dict[int, List[str]] = {}  # Cache tags to avoid DB queries
 
 		self._build_ui()
 		default_dir = get_last_root_dir() or os.path.abspath('.')
@@ -556,7 +578,9 @@ class KeyTaggerApp:
 		self.grid_frame = ttk.Frame(self.canvas, style='App.TFrame')
 		self.grid_frame.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
 		self.grid_window = self.canvas.create_window((0, 0), window=self.grid_frame, anchor='nw')
-		self.canvas.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
+		# Configure scrollbars with lazy loading callbacks
+		self.canvas.configure(yscrollcommand=lambda *args: (self.scroll_y.set(*args), self._on_scroll_update()), 
+		                      xscrollcommand=self.scroll_x.set)
 		self.canvas.grid(row=0, column=0, sticky='nsew')
 		self.scroll_y.grid(row=0, column=1, sticky='ns')
 		self.scroll_x.grid(row=1, column=0, sticky='ew')
@@ -1327,6 +1351,10 @@ class KeyTaggerApp:
 		for w in self.grid_frame.winfo_children():
 			w.destroy()
 		self.photo_cache.clear()
+		# Clear lazy loading caches
+		self._loaded_thumbnails.clear()
+		self._tags_cache.clear()
+		self._thumbnail_load_queue.clear()
 		self._render_grid()
 		# Initialize viewer in viewing/tagging mode
 		if self.view_mode or self.tagging_mode:
@@ -1371,6 +1399,126 @@ class KeyTaggerApp:
 		self.refresh_records()
 		self._thumb_apply_after_id = None
 
+	def _calculate_visible_items(self) -> Tuple[int, int]:
+		"""Calculate which items are currently visible in the viewport."""
+		if self.view_mode:
+			# In view mode, show all as horizontal strip
+			return (0, len(self.records))
+		
+		try:
+			# Get viewport position and dimensions
+			yview = self.canvas.yview()
+			canvas_height = max(1, self.canvas.winfo_height())
+			total_height = max(1, int(self.grid_frame.winfo_height()))
+			
+			# Calculate visible pixel range
+			viewport_top = int(yview[0] * total_height)
+			viewport_bottom = int(yview[1] * total_height)
+			
+			# Calculate item dimensions
+			cols = max(1, self._cols)
+			item_height = int(self._thumb_px) + 80  # Thumb + padding + tags
+			
+			# Calculate visible row range with buffer
+			visible_row_start = max(0, (viewport_top // item_height) - self._render_buffer)
+			visible_row_end = min((len(self.records) + cols - 1) // cols, 
+			                      (viewport_bottom // item_height) + self._render_buffer + 1)
+			
+			# Convert to item indices
+			start_idx = visible_row_start * cols
+			end_idx = min(len(self.records), visible_row_end * cols)
+			
+			return (start_idx, end_idx)
+		except Exception:
+			# Fallback to showing all items if calculation fails
+			return (0, len(self.records))
+
+	def _load_thumbnail_async(self, rec, img_label, rec_id):
+		"""Load thumbnail in background thread and update UI when ready."""
+		def load_and_update():
+			try:
+				# Build thumbnail path
+				thumb_path = None
+				if rec.file_path and os.path.exists(rec.file_path):
+					thumb_path = build_square_thumbnail(rec.file_path)
+				if not thumb_path and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
+					thumb_path = build_square_thumbnail(rec.thumbnail_path)
+				
+				# Persist square path back to DB if needed
+				try:
+					if thumb_path and (rec.thumbnail_path != thumb_path) and str(rec.media_type).lower() != 'audio':
+						self.db.update_thumbnail_path(rec.file_path or rec.thumbnail_path or '', thumb_path)
+				except Exception:
+					pass
+				
+				# Fallbacks for audio/images
+				if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
+					thumb_path = rec.file_path
+				elif (not thumb_path) and str(rec.media_type).lower() == 'audio':
+					thumb_path = build_audio_placeholder(size=int(self._thumb_px))
+				
+				if thumb_path and os.path.exists(thumb_path):
+					# Load and resize image
+					pil_im = Image.open(thumb_path)
+					w, h = pil_im.size
+					if self.view_mode and isinstance(self.gallery_height, int):
+						size = max(60, int(self.gallery_height) - 40)
+					else:
+						size = int(self._thumb_px)
+					scale = min(size / max(w, 1), size / max(h, 1))
+					new_w = max(1, int(w * scale))
+					new_h = max(1, int(h * scale))
+					resized = pil_im.resize((new_w, new_h), Image.LANCZOS)
+					canvas = Image.new('RGB', (size, size), color=(0, 0, 0))
+					offset = ((size - new_w) // 2, (size - new_h) // 2)
+					canvas.paste(resized, offset)
+					photo = ImageTk.PhotoImage(canvas)
+					
+					# Update UI in main thread
+					def update_ui():
+						try:
+							if img_label.winfo_exists():
+								self.photo_cache[rec_id] = photo
+								img_label.configure(image=photo)
+								img_label.image = photo
+								self._loaded_thumbnails.add(rec_id)
+						except Exception:
+							pass
+					
+					self.root.after(0, update_ui)
+			except Exception:
+				pass
+		
+		# Submit to thread pool
+		self._thumbnail_executor.submit(load_and_update)
+
+	def _on_scroll_update(self, *args):
+		"""Handle scroll events with debouncing to update visible items."""
+		# Cancel any pending scroll update
+		if self._scroll_debounce_id:
+			try:
+				self.root.after_cancel(self._scroll_debounce_id)
+			except Exception:
+				pass
+		
+		# Schedule new update after debounce delay
+		self._scroll_debounce_id = self.root.after(100, self._update_visible_items)
+
+	def _update_visible_items(self):
+		"""Update which items are rendered based on current scroll position."""
+		self._scroll_debounce_id = None
+		new_range = self._calculate_visible_items()
+		
+		# Only re-render if visible range changed significantly
+		if new_range != self._visible_range:
+			self._visible_range = new_range
+			self._render_grid()
+
+	def _invalidate_tags_cache(self, media_ids: List[int]) -> None:
+		"""Invalidate tags cache for specific media IDs."""
+		for media_id in media_ids:
+			self._tags_cache.pop(media_id, None)
+
 	def _render_grid(self) -> None:
 		# Clear existing grid children to avoid layering old grid under viewing strip
 		try:
@@ -1381,7 +1529,19 @@ class KeyTaggerApp:
 		cols = max(1, self._cols)
 		pad = 6
 		self.card_frames = []
-		for idx, rec in enumerate(self.records):
+		
+		# Calculate visible range for virtual scrolling
+		if not self.view_mode and len(self.records) > 0:
+			start_idx, end_idx = self._calculate_visible_items()
+		else:
+			# Show all in view mode
+			start_idx, end_idx = 0, len(self.records)
+		
+		# Only render visible items
+		for idx in range(start_idx, end_idx):
+			if idx >= len(self.records):
+				break
+			rec = self.records[idx]
 			if self.view_mode:
 				row = 0
 				col = idx
@@ -1407,22 +1567,6 @@ class KeyTaggerApp:
 			frame.bind('<Leave>', _on_leave)
 			self.card_frames.append(frame)
 
-
-			# Always prefer a square thumbnail sized to THUMB_SIZE with black bars
-			thumb_path = None
-			# Try from original file first (images); build_square_thumbnail is idempotent and cached by path
-			if rec.file_path and os.path.exists(rec.file_path):
-				thumb_path = build_square_thumbnail(rec.file_path)
-			# If that failed (e.g., videos), try from an existing thumbnail image
-			if not thumb_path and rec.thumbnail_path and os.path.exists(rec.thumbnail_path):
-				thumb_path = build_square_thumbnail(rec.thumbnail_path)
-			# Persist square path back to DB if we generated one and it's different
-			try:
-				if thumb_path and (rec.thumbnail_path != thumb_path) and str(rec.media_type).lower() != 'audio':
-					self.db.update_thumbnail_path(rec.file_path or rec.thumbnail_path or '', thumb_path)
-			except Exception:
-				pass
-
 			# Image container so we can overlay filename text on top of the image
 			img_container = tk.Frame(frame, bg='#000000')
 			img_container.grid(row=1, column=0, padx=0, pady=0, sticky='nsew')
@@ -1435,40 +1579,32 @@ class KeyTaggerApp:
 			img_label.grid(row=0, column=0, sticky='nsew')
 			img_label.bind('<Button-1>', lambda e, rid=rec.id: self.on_item_click(e, rid))
 			img_label.bind('<Button-3>', _on_right_click)
-			# Fallbacks: show original image if available; audio uses placeholder
-			if (not thumb_path) and str(rec.media_type).lower() == 'image' and rec.file_path and os.path.exists(rec.file_path):
-				thumb_path = rec.file_path
-			elif (not thumb_path) and str(rec.media_type).lower() == 'audio':
-				thumb_path = build_audio_placeholder(size=int(self._thumb_px))
-			if thumb_path and os.path.exists(thumb_path):
-				try:
-					pil_im = Image.open(thumb_path)
-					# Resize to current thumb size with black bars if needed
-					w, h = pil_im.size
-					# Choose target square size: adapt to viewing mode strip height
-					if self.view_mode and isinstance(self.gallery_height, int):
-						size = max(60, int(self.gallery_height) - 40)
-					else:
-						size = int(self._thumb_px)
-					scale = min(size / max(w, 1), size / max(h, 1))
-					new_w = max(1, int(w * scale))
-					new_h = max(1, int(h * scale))
-					resized = pil_im.resize((new_w, new_h), Image.LANCZOS)
-					canvas = Image.new('RGB', (size, size), color=(0, 0, 0))
-					offset = ((size - new_w) // 2, (size - new_h) // 2)
-					canvas.paste(resized, offset)
-					photo = ImageTk.PhotoImage(canvas)
-					self.photo_cache[rec.id] = photo
-					img_label.configure(image=photo)
-					# Keep a direct reference on the widget to avoid garbage collection
-					img_label.image = photo
-				except Exception:
-					pass
+			
+			# Lazy loading optimization: Check if thumbnail is already loaded
+			if rec.id in self._loaded_thumbnails and rec.id in self.photo_cache:
+				# Use cached thumbnail
+				photo = self.photo_cache[rec.id]
+				img_label.configure(image=photo)
+				img_label.image = photo
+			else:
+				# Show placeholder and load asynchronously
+				if self._placeholder_photo is None:
+					self._placeholder_photo = create_placeholder_image(int(self._thumb_px))
+				img_label.configure(image=self._placeholder_photo)
+				img_label.image = self._placeholder_photo
+				
+				# Load thumbnail in background
+				self._load_thumbnail_async(rec, img_label, rec.id)
 
-			# Tags row (above filename overlay)
+			# Tags row (above filename overlay) - with caching to avoid repeated DB queries
 			tags = []
 			try:
-				tags = self.db.get_media_tags(rec.id)
+				# Check cache first
+				if rec.id in self._tags_cache:
+					tags = self._tags_cache[rec.id]
+				else:
+					tags = self.db.get_media_tags(rec.id)
+					self._tags_cache[rec.id] = tags
 			except Exception:
 				pass
 			has_tags = bool(tags)
@@ -2498,6 +2634,11 @@ class KeyTaggerApp:
 		# Ensure background playback is fully stopped when window closes
 		try:
 			self._stop_media_playback()
+		except Exception:
+			pass
+		# Shutdown thumbnail loading thread pool
+		try:
+			self._thumbnail_executor.shutdown(wait=False)
 		except Exception:
 			pass
 		try:
@@ -4448,24 +4589,16 @@ class KeyTaggerApp:
 		if not files_to_delete:
 			return
 		
-		# Show confirmation dialog
-		if len(files_to_delete) == 1:
-			msg = f'Are you sure you want to delete this file?\n\n{files_to_delete[0][2]}'
-		else:
-			msg = f'Are you sure you want to delete {len(files_to_delete)} files?'
-		
-		if not messagebox.askyesno('Confirm Delete', msg):
-			return
-		
-		# Delete files and remove from database
+		# Delete files and remove from database (no confirmation)
 		deleted_ids = []
+		failed_files = []
 		for rid, file_path, file_name in files_to_delete:
 			try:
 				os.remove(file_path)
 				self.db.delete_media(file_path)
 				deleted_ids.append(rid)
 			except Exception as e:
-				messagebox.showerror('Delete Error', f'Failed to delete {file_name}:\n{str(e)}')
+				failed_files.append((file_name, str(e)))
 		
 		# If in view/tagging mode and current file was deleted, navigate away
 		if (self.view_mode or self.tagging_mode) and self.current_view_id in deleted_ids:
@@ -4492,6 +4625,23 @@ class KeyTaggerApp:
 		
 		# Refresh records to update the gallery
 		self.refresh_records(preserve_selection=False)
+		
+		# Show toast notification
+		if deleted_ids and not failed_files:
+			# All files deleted successfully
+			if len(deleted_ids) == 1:
+				self._show_centered_toast(f"Deleted 1 file")
+			else:
+				self._show_centered_toast(f"Deleted {len(deleted_ids)} files")
+		elif deleted_ids and failed_files:
+			# Some succeeded, some failed
+			self._show_centered_toast(f"Deleted {len(deleted_ids)} file(s)\nFailed to delete {len(failed_files)}")
+		elif failed_files:
+			# All failed
+			if len(failed_files) == 1:
+				self._show_centered_toast(f"Failed to delete:\n{failed_files[0][0]}")
+			else:
+				self._show_centered_toast(f"Failed to delete {len(failed_files)} files")
 
 	def on_ctrl_key(self, event: tk.Event) -> None:
 		k = (event.keysym or '').lower()
