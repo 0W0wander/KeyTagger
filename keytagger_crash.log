@@ -1,0 +1,242 @@
+2025-11-27 22:51:53,517 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 459, in KeyTaggerApp
+    self._toast_window: Optional[tk.Toplevel] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T22:51:53.518387
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 459, in KeyTaggerApp
+    self._toast_window: Optional[tk.Toplevel] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 22:53:50,590 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T22:53:50.591378
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 22:53:59,924 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T22:53:59.924844
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 22:55:12,421 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T22:55:12.421378
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 454, in KeyTaggerApp
+    self._gif_thread: Optional[threading.Thread] = None
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 22:57:05,554 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 462, in KeyTaggerApp
+    self._visible_range: Tuple[int, int] = (0, 0)  # Start and end indices of visible items
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T22:57:05.555027
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 462, in KeyTaggerApp
+    self._visible_range: Tuple[int, int] = (0, 0)  # Start and end indices of visible items
+    ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 23:01:23,880 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 1452, in KeyTaggerApp
+    for w in self.grid_frame.winfo_children():
+             ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+CRASH REPORT - 2025-11-27T23:01:23.880707
+================================================================================
+Exception Type: NameError
+Exception Value: name 'self' is not defined
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 364, in <module>
+    class KeyTaggerApp:
+  File "tkapp.py", line 1452, in KeyTaggerApp
+    for w in self.grid_frame.winfo_children():
+             ^^^^
+NameError: name 'self' is not defined
+
+================================================================================
+
+2025-11-27 23:05:09,335 - ERROR - KeyTagger - Fatal error in main: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+2025-11-27 23:05:18,429 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+================================================================================
+CRASH REPORT - 2025-11-27T23:05:18.430485
+================================================================================
+Exception Type: AttributeError
+Exception Value: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+================================================================================
+
+2025-11-27 23:08:52,128 - ERROR - KeyTagger - Fatal error in main: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+2025-11-27 23:08:53,428 - ERROR - KeyTagger - Unhandled exception occurred
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+================================================================================
+CRASH REPORT - 2025-11-27T23:08:53.429529
+================================================================================
+Exception Type: AttributeError
+Exception Value: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+Traceback:
+Traceback (most recent call last):
+  File "tkapp.py", line 5265, in <module>
+    app = KeyTaggerApp(root)
+          ^^^^^^^^^^^^^^^^^^
+  File "tkapp.py", line 370, in __init__
+    self._setup_theme()
+  File "tkapp.py", line 1102, in _setup_theme
+    self._refresh_hotkey_placeholders()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'KeyTaggerApp' object has no attribute '_refresh_hotkey_placeholders'
+
+================================================================================
+

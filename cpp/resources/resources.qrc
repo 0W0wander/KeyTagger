@@ -1,0 +1,10 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/icons">
+        <!-- Placeholder for icons -->
+    </qresource>
+    <qresource prefix="/styles">
+        <!-- Placeholder for stylesheets -->
+    </qresource>
+</RCC>
+
